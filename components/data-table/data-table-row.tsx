@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useCallback, useRef } from "react";
-import { ChevronRight, ChevronDown, Edit2, Download, FileText, Upload, Plus, FileSpreadsheet } from "lucide-react";
+import { ChevronRight, ChevronDown, Edit2, FileText, Upload, Plus, FileSpreadsheet } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { toggleRowExpand } from "@/store/slices/uiSlice";
 import { updateRecordField } from "@/store/slices/dataSlice";
@@ -24,6 +24,7 @@ const statusBadgeVariant: Record<string, "default" | "secondary" | "outline" | "
 function EditableCell({ record, field }: { record: DocketRecord; field: string }) {
   const dispatch = useAppDispatch();
   const [editing, setEditing] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const prevValue = String((record as unknown as Record<string, unknown>)[field] ?? "");
 
   const handleBlur = useCallback(
@@ -32,7 +33,6 @@ function EditableCell({ record, field }: { record: DocketRecord; field: string }
       const newValue = e.target.value;
       if (newValue !== prevValue) {
         dispatch(updateRecordField({ id: record.id, field, value: newValue }));
-        toast.success(`Updated ${field}`);
       }
     },
     [dispatch, record.id, field, prevValue]
@@ -40,6 +40,33 @@ function EditableCell({ record, field }: { record: DocketRecord; field: string }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+  };
+
+  const handleGenerate = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setGenerating(true);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recordId: record.id }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const version = res.headers.get("X-Generation-Version") || "1";
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${record.docketNumber}_v${version}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      dispatch(updateRecordField({ id: record.id, field: "generationVersion", value: Number(version) }));
+      toast.success(`GTP document v${version} generated`);
+    } catch (err) {
+      toast.error("Generation failed", { description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setGenerating(false);
+    }
   };
 
   if (editing) {
@@ -55,41 +82,20 @@ function EditableCell({ record, field }: { record: DocketRecord; field: string }
   }
 
   if (field === "docxStatus") {
-    const status = record.docxStatus;
-    if (status === "download") {
-      return (
-        <div className="flex flex-col gap-1 items-start">
-          <button
-            onClick={(e) => { e.stopPropagation(); toast.success(`Downloading ${record.docketNumber}_report.docx`); }}
-            className="inline-flex items-center gap-1.5 text-[#2563eb] hover:text-[#1d4ed8] font-bold text-xs cursor-pointer"
-          >
-            <Download className="w-3 h-3 stroke-[2.5]" />
-            <span>Download</span>
-          </button>
-          {record.docxGeneratedAt && (
-            <span className="text-[9px] text-muted-foreground italic">{record.docxGeneratedAt}</span>
-          )}
-        </div>
-      );
-    }
-    if (status === "generating") {
-      return (
-        <div className="flex flex-col gap-1 w-full max-w-[100px]">
-          <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
-            <div className="bg-[#0f62fe] h-1.5 rounded-full transition-all duration-300" style={{ width: `${record.docxProgress || 0}%` }} />
-          </div>
-          <span className="text-[9px] text-muted-foreground">Generating...</span>
-        </div>
-      );
-    }
+    const ver = record.generationVersion;
     return (
-      <button
-        onClick={(e) => { e.stopPropagation(); dispatch(updateRecordField({ id: record.id, field: "docxStatus", value: "generating" })); toast.success(`Generating DOCX for ${record.docketNumber}`); }}
-        disabled={record.excelFiles.length === 0}
-        className="text-xs font-semibold px-2 py-1 rounded-lg border transition-all duration-200 bg-[#00875a] hover:bg-[#006644] text-white border-transparent shadow-xs cursor-pointer disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed disabled:border-border"
-      >
-        Generate
-      </button>
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={handleGenerate}
+          disabled={generating || record.excelFiles.length === 0}
+          className="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-lg border transition-all duration-200 bg-[#00875a] hover:bg-[#006644] text-white border-transparent shadow-xs cursor-pointer disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed disabled:border-border"
+        >
+          {generating ? "Generating..." : "Generate"}
+        </button>
+        {ver > 0 && (
+          <span className="text-[10px] text-muted-foreground font-medium">v{ver}</span>
+        )}
+      </div>
     );
   }
 
@@ -130,44 +136,51 @@ function EditableCell({ record, field }: { record: DocketRecord; field: string }
 
 function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }) {
   const dispatch = useAppDispatch();
+  const [generating, setGenerating] = useState(false);
   const value = String((record as unknown as Record<string, unknown>)[field] ?? "");
 
+  const handleGenerate = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setGenerating(true);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recordId: record.id }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const version = res.headers.get("X-Generation-Version") || "1";
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${record.docketNumber}_v${version}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      dispatch(updateRecordField({ id: record.id, field: "generationVersion", value: Number(version) }));
+      toast.success(`GTP document v${version} generated`);
+    } catch (err) {
+      toast.error("Generation failed", { description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   if (field === "docxStatus") {
-    const status = record.docxStatus;
-    if (status === "download") {
-      return (
-        <div className="flex flex-col gap-1 items-start">
-          <button
-            onClick={(e) => { e.stopPropagation(); toast.success(`Downloading ${record.docketNumber}_report.docx`); }}
-            className="inline-flex items-center gap-1.5 text-[#2563eb] hover:text-[#1d4ed8] font-bold text-xs cursor-pointer"
-          >
-            <Download className="w-3 h-3 stroke-[2.5]" />
-            <span>Download</span>
-          </button>
-          {record.docxGeneratedAt && (
-            <span className="text-[9px] text-muted-foreground italic">{record.docxGeneratedAt}</span>
-          )}
-        </div>
-      );
-    }
-    if (status === "generating") {
-      return (
-        <div className="flex flex-col gap-1 w-full max-w-[100px]">
-          <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
-            <div className="bg-[#0f62fe] h-1.5 rounded-full transition-all duration-300" style={{ width: `${record.docxProgress || 0}%` }} />
-          </div>
-          <span className="text-[9px] text-muted-foreground">Generating...</span>
-        </div>
-      );
-    }
+    const ver = record.generationVersion;
     return (
-      <button
-        onClick={(e) => { e.stopPropagation(); dispatch(updateRecordField({ id: record.id, field: "docxStatus", value: "generating" })); toast.success(`Generating DOCX for ${record.docketNumber}`); }}
-        disabled={record.excelFiles.length === 0}
-        className="text-xs font-semibold px-2 py-1 rounded-lg border transition-all duration-200 bg-[#00875a] hover:bg-[#006644] text-white border-transparent shadow-xs cursor-pointer disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed disabled:border-border"
-      >
-        Generate
-      </button>
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={handleGenerate}
+          disabled={generating || record.excelFiles.length === 0}
+          className="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-lg border transition-all duration-200 bg-[#00875a] hover:bg-[#006644] text-white border-transparent shadow-xs cursor-pointer disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed disabled:border-border"
+        >
+          {generating ? "Generating..." : "Generate"}
+        </button>
+        {ver > 0 && (
+          <span className="text-[10px] text-muted-foreground font-medium">v{ver}</span>
+        )}
+      </div>
     );
   }
 
@@ -192,8 +205,8 @@ function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }
           throw new Error(err);
         }
         const data = await res.json();
-        const newUrls = data.attachments.map((a: { url: string }) => a.url);
-        dispatch(updateRecordField({ id: record.id, field: "excelFiles", value: [...files, ...newUrls] }));
+        const newFiles = data.attachments.map((a: { name: string; url: string }) => ({ name: a.name, url: a.url }));
+        dispatch(updateRecordField({ id: record.id, field: "excelFiles", value: [...files, ...newFiles] }));
         toast.success(`Uploaded ${selectedFiles.length} file(s)`, { id: toastId });
       } catch (err) {
         toast.error("Upload failed", { id: toastId, description: err instanceof Error ? err.message : undefined });
@@ -232,13 +245,13 @@ function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }
           </button>
         </div>
         <input ref={fileInputRef} type="file" multiple accept=".xlsx,.xls" onChange={handleUpload} className="hidden" />
-        {files.slice(0, 3).map((url, i) => (
-          <a key={i} href={url} target="_blank" rel="noopener noreferrer"
+        {files.slice(0, 3).map((f, i) => (
+          <a key={i} href={f.url} target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-1 text-xs text-[#0f62fe] hover:underline truncate"
             onClick={(e) => e.stopPropagation()}
           >
             <FileText className="h-3 w-3 shrink-0" />
-            <span className="truncate">File {i + 1}</span>
+            <span className="truncate">{f.name}</span>
           </a>
         ))}
         {files.length > 3 && (
@@ -288,7 +301,10 @@ export function DataTableRow({ record }: RowProps) {
               </button>
             )}
             {idx === 0 && !hasChildren && <span className="inline-block w-[22px]" />}
-            <ReadonlyCell record={record} field={col.key} />
+            {col.key === "loiNo" || col.key === "project"
+              ? <EditableCell record={record} field={col.key} />
+              : <ReadonlyCell record={record} field={col.key} />
+            }
           </td>
         ))}
       </tr>

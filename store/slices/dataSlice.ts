@@ -4,6 +4,7 @@ import {
 } from "@reduxjs/toolkit";
 import type { DocketRecord, ChildItem } from "@/types";
 import { generateChildItems } from "@/lib/child-data";
+import { toast } from "sonner";
 
 export const dataAdapter = createEntityAdapter<DocketRecord>({
   sortComparer: (a, b) => a.docketNumber.localeCompare(b.docketNumber),
@@ -44,9 +45,13 @@ interface DbRecord {
   utility: string;
   partyName: string;
   projectRefNo: string;
+  loiNo: string;
+  Project: string;
   enquiryTenderNo: string;
+  generationVersion: number;
   createdAt: string;
   updatedAt: string;
+  attachments: { name: string; url: string }[];
 }
 
 function toDocketRecord(r: DbRecord, existing: DocketRecord | undefined): DocketRecord {
@@ -56,8 +61,11 @@ function toDocketRecord(r: DbRecord, existing: DocketRecord | undefined): Docket
     utility: r.utility,
     partyName: r.partyName,
     projectRefNo: r.projectRefNo,
+    loiNo: r.loiNo ?? "",
+    project: r.Project ?? "",
     enquiryTenderNo: r.enquiryTenderNo,
-    excelFiles: existing?.excelFiles ?? [],
+    generationVersion: r.generationVersion ?? 0,
+    excelFiles: existing?.excelFiles ?? r.attachments.map((a) => ({ name: a.name, url: a.url })),
     docxStatus: (existing?.docxStatus as DocketRecord["docxStatus"]) ?? "not_generated",
     docxGeneratedAt: existing?.docxGeneratedAt,
     docxProgress: existing?.docxProgress,
@@ -94,14 +102,26 @@ export const syncSmartsheet = createAsyncThunk("data/syncSmartsheet", async (_, 
   };
 });
 
+export const updateRecordField = createAsyncThunk(
+  "data/updateRecordField",
+  async ({ id, field, value }: { id: string; field: string; value: unknown }, { rejectWithValue }) => {
+    const res = await fetch("/api/records", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, field, value }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      return rejectWithValue(text);
+    }
+    return { id, field, value };
+  }
+);
+
 const dataSlice = createSlice({
   name: "data",
   initialState,
   reducers: {
-    updateRecordField(state, action: PayloadAction<{ id: string; field: string; value: unknown }>) {
-      const { id, field, value } = action.payload;
-      dataAdapter.updateOne(state, { id, changes: { [field]: value } as Partial<DocketRecord> });
-    },
     setChildItems(state, action: PayloadAction<{ id: string; children: ChildItem[] }>) {
       state.childItems[action.payload.id] = action.payload.children;
     },
@@ -137,11 +157,21 @@ const dataSlice = createSlice({
       .addCase(syncSmartsheet.rejected, (state, action) => {
         console.error("[Redux] syncSmartsheet rejected:", action.error);
         state.syncing = false;
+      })
+      .addCase(updateRecordField.fulfilled, (state, action) => {
+        const { id, field, value } = action.payload;
+        dataAdapter.updateOne(state, { id, changes: { [field]: value } as Partial<DocketRecord> });
+        toast.success(`Updated ${field}`);
+      })
+      .addCase(updateRecordField.rejected, (_, action) => {
+        toast.error("Failed to update field", {
+          description: action.payload as string ?? "Unknown error",
+        });
       });
   },
 });
 
-export const { updateRecordField, setChildItems } = dataSlice.actions;
+export const { setChildItems } = dataSlice.actions;
 
 import type { RootState } from "@/store";
 const dataSelectors = dataAdapter.getSelectors<RootState>((s) => s.data);

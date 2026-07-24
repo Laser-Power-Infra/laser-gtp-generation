@@ -26,7 +26,7 @@ export function DataTableToolbar() {
         "Party Name": rec.partyName,
         "Project Ref No": rec.projectRefNo,
         "Enquiry/Tender No": rec.enquiryTenderNo,
-        "Excel Files": rec.excelFiles.join(", "),
+        "Excel Files": rec.excelFiles.map((f) => f.name).join(", "),
         "DOCX Status": rec.docxStatus,
       }));
       const ws = XLSX.utils.json_to_sheet(data);

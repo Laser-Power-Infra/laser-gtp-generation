@@ -13,8 +13,11 @@ export interface DocketRecord {
   utility: string;
   partyName: string;
   projectRefNo: string;
+  loiNo: string;
+  project: string;
   enquiryTenderNo: string;
-  excelFiles: string[];
+  generationVersion: number;
+  excelFiles: Array<{ name: string; url: string }>;
   docxStatus: "download" | "generating" | "not_generated";
   docxGeneratedAt?: string;
   docxProgress?: number;
@@ -33,6 +36,8 @@ export interface FiltersState {
   utility: string[];
   partyName: string;
   projectRefNo: string;
+  loiNo: string;
+  project: string;
   enquiryTenderNo: string;
   docxStatus: string[];
 }

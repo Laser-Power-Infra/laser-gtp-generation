@@ -12,6 +12,8 @@ export const selectHasActiveFilters = createSelector(
     filters.utility.length > 0 ||
     filters.partyName !== "" ||
     filters.projectRefNo !== "" ||
+    filters.loiNo !== "" ||
+    filters.project !== "" ||
     filters.enquiryTenderNo !== "" ||
     filters.docxStatus.length > 0
 );

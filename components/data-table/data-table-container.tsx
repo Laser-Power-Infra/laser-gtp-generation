@@ -20,6 +20,8 @@ export const COLUMNS = [
   { key: "partyName", label: "Party Name", filterType: "text" as const, sortable: true },
   { key: "projectRefNo", label: "Project Ref No", filterType: "text" as const, sortable: true },
   { key: "enquiryTenderNo", label: "Enquiry/Tender No", filterType: "text" as const, sortable: true },
+  { key: "loiNo", label: "LOI No", filterType: "text" as const, sortable: true },
+  { key: "project", label: "Project", filterType: "text" as const, sortable: true },
   { key: "excelFiles", label: "Excel Files", filterType: null, sortable: false },
   { key: "docxStatus", label: "Generate GTP", filterType: null, sortable: true },
 ];
@@ -43,6 +45,12 @@ function matchesFilters(record: DocketRecord, filters: FiltersState): boolean {
   }
   if (filters.projectRefNo) {
     if (!record.projectRefNo.toLowerCase().includes(filters.projectRefNo.toLowerCase())) return false;
+  }
+  if (filters.loiNo) {
+    if (!record.loiNo.toLowerCase().includes(filters.loiNo.toLowerCase())) return false;
+  }
+  if (filters.project) {
+    if (!record.project.toLowerCase().includes(filters.project.toLowerCase())) return false;
   }
   if (filters.enquiryTenderNo) {
     if (!record.enquiryTenderNo.toLowerCase().includes(filters.enquiryTenderNo.toLowerCase())) return false;

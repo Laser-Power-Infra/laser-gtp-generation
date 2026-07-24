@@ -30,7 +30,7 @@ const COLUMN_MAP: Record<string, string> = {
   "Docket No  (Debosmita Nath)": "docketNumber",
   "Utility (Marketing Team)": "utility",
   "Party Name  (Debosmita Nath)": "partyName",
-  "Reference No  (Debosmita Nath)": "projectRefNo",
+  "Project Name (Marketing Team)": "projectRefNo",
   "Enquiry / Tender No. (Marketing Team)": "enquiryTenderNo",
 };
 

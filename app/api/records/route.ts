@@ -7,6 +7,7 @@ export async function GET() {
   try {
     const records = await prisma.docketRecord.findMany({
       orderBy: { docketNumber: "asc" },
+      include: { attachments: { select: { name: true, url: true } } },
     });
     console.log("[API] GET result:", records.length, "records found");
     return NextResponse.json({ records });
@@ -14,6 +15,41 @@ export async function GET() {
     console.error("[API] GET /api/records error:", error);
     return NextResponse.json(
       { error: "Failed to fetch records" },
+      { status: 500 }
+    );
+  }
+}
+
+const ALLOWED_FIELDS = new Set(["loiNo", "project", "projectRefNo", "partyName", "docketNumber", "utility", "enquiryTenderNo", "excelFiles", "docxStatus", "generationVersion"]);
+
+const VIRTUAL_FIELDS = new Set(["excelFiles", "docxStatus"]);
+
+const FIELD_MAP: Record<string, string> = {
+  project: "Project",
+};
+
+export async function PATCH(request: Request) {
+  try {
+    const { id, field, value } = await request.json();
+    if (!id || !field) {
+      return NextResponse.json({ error: "Missing id or field" }, { status: 400 });
+    }
+    if (!ALLOWED_FIELDS.has(field)) {
+      return NextResponse.json({ error: `Field '${field}' is not updatable` }, { status: 400 });
+    }
+    if (VIRTUAL_FIELDS.has(field)) {
+      return NextResponse.json({ success: true });
+    }
+    const dbField = FIELD_MAP[field] ?? field;
+    await prisma.docketRecord.update({
+      where: { id },
+      data: { [dbField]: value },
+    });
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("[API] PATCH /api/records error:", error);
+    return NextResponse.json(
+      { error: "Failed to update record" },
       { status: 500 }
     );
   }
@@ -27,7 +63,7 @@ export async function POST() {
 
     if (smartsheetRecords.length === 0) {
       console.warn("[API] No records returned from Smartsheet");
-      const allRecords = await prisma.docketRecord.findMany({ orderBy: { docketNumber: "asc" } });
+      const allRecords = await prisma.docketRecord.findMany({ orderBy: { docketNumber: "asc" }, include: { attachments: { select: { name: true, url: true } } } });
       return NextResponse.json({ records: allRecords, syncedCount: 0 });
     }
 
@@ -68,7 +104,9 @@ export async function POST() {
       await prisma.$transaction(
         toUpdate.map((u) =>
           prisma.docketRecord.update({ where: { id: u.id }, data: u.data })
-        )
+        ),{
+          timeout: 100000
+        }
       );
     }
 
@@ -77,6 +115,7 @@ export async function POST() {
 
     const allRecords = await prisma.docketRecord.findMany({
       orderBy: { docketNumber: "asc" },
+      include: { attachments: { select: { name: true, url: true } } },
     });
     console.log("[API] Returning", allRecords.length, "records from DB after sync");
 

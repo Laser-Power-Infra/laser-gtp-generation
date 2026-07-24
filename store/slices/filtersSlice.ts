@@ -6,6 +6,8 @@ const initialState: FiltersState = {
   utility: [],
   partyName: "",
   projectRefNo: "",
+  loiNo: "",
+  project: "",
   enquiryTenderNo: "",
   docxStatus: [],
 };

@@ -1,26 +1,38 @@
 import { google } from "googleapis";
 import { Readable } from "stream";
+import path from "path";
+import fs from "fs";
 
 let driveInstance: ReturnType<typeof google.drive> | null = null;
 
 function getDriveClient() {
   if (driveInstance) return driveInstance;
 
-  const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
-  const privateKey = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
-  const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
+  const credsPath = path.join(process.cwd(), "credentials.json");
+  const tokenPath = path.join(process.cwd(), "token.json");
 
-  if (!clientEmail || !privateKey || !folderId) {
-    throw new Error("Missing GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY, or GOOGLE_DRIVE_FOLDER_ID in .env");
+  if (!fs.existsSync(credsPath) || !fs.existsSync(tokenPath)) {
+    throw new Error("Missing credentials.json or token.json in project root");
   }
 
-  const auth = new google.auth.JWT({
-    email: clientEmail,
-    key: privateKey,
-    scopes: ["https://www.googleapis.com/auth/drive.file"],
+  const creds = JSON.parse(fs.readFileSync(credsPath, "utf-8"));
+  const token = JSON.parse(fs.readFileSync(tokenPath, "utf-8"));
+
+  const oauth2Client = new google.auth.OAuth2(
+    creds.installed.client_id,
+    creds.installed.client_secret,
+    "http://localhost"
+  );
+
+  oauth2Client.setCredentials({
+    refresh_token: token.refresh_token,
+    access_token: token.token,
+    expiry_date: Date.parse(token.expiry),
+    scope: (token.scopes || []).join(" "),
+    token_type: "Bearer",
   });
 
-  driveInstance = google.drive({ version: "v3", auth });
+  driveInstance = google.drive({ version: "v3", auth: oauth2Client });
   return driveInstance;
 }
 
