@@ -1,0 +1,38 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model DocketRecord {
+  id              String   @id @default(cuid())
+  docketNumber    String?
+  utility         String?
+  partyName       String?
+  projectRefNo    String?
+  enquiryTenderNo String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  attachments     Attachment[]
+
+  @@index([utility])
+  @@index([partyName])
+  @@index([docketNumber])
+}
+model Attachment {
+  id         String   @id @default(cuid())
+  recordId   String
+  name       String
+  url        String
+  type       String?
+  size       Int?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  record     DocketRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@index([recordId])
+}
