@@ -84,10 +84,11 @@ export async function POST(request: Request) {
 
     const outputPath = path.join(tmpDir, "output.docx");
     const docxBuffer = await generateGTPDocx(data, { outputPath });
+    fs.writeFileSync(path.join(process.cwd(), "_debug_output.docx"), docxBuffer);
 
     const filename = `${record.docketNumber || "GTP"}_v${version}.docx`;
 
-    return new NextResponse(new Blob([new Uint8Array(docxBuffer)]), {
+    return new NextResponse(new Uint8Array(docxBuffer), {
       headers: {
         "Content-Type":
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

@@ -1,9 +1,11 @@
 import {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
-  WidthType, BorderStyle, PageBreak, Header,
-  TableLayoutType, convertInchesToTwip,
+  WidthType, BorderStyle, PageBreak, Header, Footer, ImageRun,
+  TableLayoutType, convertInchesToTwip, SimpleField,
 } from "docx";
 import type { GTPDocumentData, GTPTable, GTPRow, GTPCell } from "@/types/gtp-types";
+import fs from "fs";
+import path from "path";
 
 const BORDER = {
   style: BorderStyle.SINGLE,
@@ -135,6 +137,7 @@ function buildRows(gtpTable: GTPTable): TableRow[] {
         colIdx += cellSpan;
         cellIdx++;
       } else {
+        cells.push(buildContinuationCell(1));
         colIdx++;
       }
     }
@@ -192,6 +195,10 @@ function createHeaderTable(data: GTPDocumentData): Table {
 export async function renderDocx(data: GTPDocumentData): Promise<Buffer> {
   const children: (Paragraph | Table)[] = [];
 
+  const logoBuffer = fs.readFileSync(path.join(process.cwd(), "public", "laser-logo.jpeg"));
+  const footerDetailsBuffer = fs.readFileSync(path.join(process.cwd(), "public", "footer-company-details.jpeg"));
+  const signatureBuffer = fs.readFileSync(path.join(process.cwd(), "public", "puja-mam-signature.jpeg"));
+
   for (let i = 0; i < data.tables.length; i++) {
     if (i > 0) {
       children.push(buildPageBreak());
@@ -214,19 +221,65 @@ export async function renderDocx(data: GTPDocumentData): Promise<Buffer> {
     children: [
       new Paragraph({
         children: [
-          new TextRun({ text: "LASER POWER AND INFRA LIMITED", bold: true, size: 30 }),
+          new TextRun({ text: "LASER POWER AND INFRA LIMITED", bold: true, size: 40, color: "CC0000" }),
+          new ImageRun({
+            data: logoBuffer,
+            type: "jpg",
+            transformation: { width: 229, height: 92 },
+          }),
         ],
         alignment: "center",
         spacing: { after: 0 },
       }),
       new Paragraph({
         children: [
-          new TextRun({ text: "Kolkata, West Bengal India; info@laserpowerinfra.com", size: 18 }),
+          new TextRun({ text: "Kolkata, West Bengal India; info@laserpowerinfra.com", size: 18, color: "0047AB" }),
         ],
         alignment: "center",
         spacing: { after: 200 },
       }),
       createHeaderTable(data),
+    ],
+  });
+
+  const footer = new Footer({
+    children: [
+      new Paragraph({
+        children: [
+          new ImageRun({
+            data: footerDetailsBuffer,
+            type: "jpg",
+            transformation: { width: 550, height: 70 },
+          }),
+        ],
+        alignment: "left",
+        spacing: { before: 0, after: 0 },
+      }),
+      new Paragraph({
+        children: [
+          new ImageRun({
+            data: signatureBuffer,
+            type: "jpg",
+            transformation: { width: 148, height: 78 },
+          }),
+        ],
+        alignment: "right",
+        spacing: { before: 0, after: 0 },
+      }),
+      new Paragraph({
+        children: [
+          new SimpleField(" PAGE "),
+          new TextRun({ text: " of " }),
+          new SimpleField(" NUMPAGES "),
+        ],
+        alignment: "center",
+        spacing: { before: 200, after: 0 },
+      }),
+      new Paragraph({
+        children: [new TextRun({ text: "LASER POWER AND INFRA LIMITED", size: 14, color: "666666" })],
+        alignment: "center",
+        spacing: { before: 0, after: 0 },
+      }),
     ],
   });
 
@@ -238,12 +291,20 @@ export async function renderDocx(data: GTPDocumentData): Promise<Buffer> {
             margin: {
               top: convertInchesToTwip(1),
               right: convertInchesToTwip(1),
-              bottom: convertInchesToTwip(1),
+              bottom: convertInchesToTwip(1.5),
               left: convertInchesToTwip(1),
+            },
+            borders: {
+              pageBorders: { display: "allPages", offsetFrom: "page" },
+              pageBorderTop: { style: "single", size: 12, color: "FF0000", space: 8 },
+              pageBorderBottom: { style: "single", size: 12, color: "FF0000", space: 8 },
+              pageBorderLeft: { style: "single", size: 12, color: "FF0000", space: 8 },
+              pageBorderRight: { style: "single", size: 12, color: "FF0000", space: 8 },
             },
           },
         },
         headers: { default: header },
+        footers: { default: footer },
         children,
       },
     ],
