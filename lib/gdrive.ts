@@ -1,22 +1,20 @@
 import { google } from "googleapis";
 import { Readable } from "stream";
-import path from "path";
-import fs from "fs";
 
 let driveInstance: ReturnType<typeof google.drive> | null = null;
 
 function getDriveClient() {
   if (driveInstance) return driveInstance;
 
-  const credsPath = path.join(process.cwd(), "credentials.json");
-  const tokenPath = path.join(process.cwd(), "token.json");
+  const credsRaw = process.env.GOOGLE_CREDENTIALS_JSON;
+  const tokenRaw = process.env.GOOGLE_TOKEN_JSON;
 
-  if (!fs.existsSync(credsPath) || !fs.existsSync(tokenPath)) {
-    throw new Error("Missing credentials.json or token.json in project root");
+  if (!credsRaw || !tokenRaw) {
+    throw new Error("Missing GOOGLE_CREDENTIALS_JSON or GOOGLE_TOKEN_JSON in environment");
   }
 
-  const creds = JSON.parse(fs.readFileSync(credsPath, "utf-8"));
-  const token = JSON.parse(fs.readFileSync(tokenPath, "utf-8"));
+  const creds = JSON.parse(credsRaw);
+  const token = JSON.parse(tokenRaw);
 
   const oauth2Client = new google.auth.OAuth2(
     creds.installed.client_id,
