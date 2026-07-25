@@ -4,7 +4,11 @@ import { prisma } from "@/lib/prisma";
 
 export async function POST(req: NextRequest) {
   try {
-    const evt = await verifyWebhook(req);
+    const secret = process.env.CLERK_WEBHOOK_SIGNING_SECRET || process.env.CLERK_WEBHOOK_SECRET;
+    if (!secret) {
+      throw new Error("Missing CLERK_WEBHOOK_SIGNING_SECRET or CLERK_WEBHOOK_SECRET environment variable");
+    }
+    const evt = await verifyWebhook(req, { signingSecret: secret });
 
     const { id } = evt.data;
     const eventType = evt.type;
