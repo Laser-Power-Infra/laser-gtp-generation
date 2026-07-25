@@ -2,6 +2,7 @@
 
 import React from "react";
 import { FileText } from "lucide-react";
+import { SignInButton, SignUpButton, Show, UserButton } from "@clerk/nextjs";
 
 export default function DashboardHeader() {
   return (
@@ -13,6 +14,15 @@ export default function DashboardHeader() {
         <h1 className="text-xl font-bold text-foreground tracking-tight">
           Laser GTP Generation Dashboard
         </h1>
+      </div>
+      <div className="flex items-center gap-3">
+        <Show when="signed-out">
+          <SignInButton />
+          <SignUpButton />
+        </Show>
+        <Show when="signed-in">
+          <UserButton />
+        </Show>
       </div>
     </header>
   );

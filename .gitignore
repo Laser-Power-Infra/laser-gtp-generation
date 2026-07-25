@@ -44,3 +44,5 @@ next-env.d.ts
 /generated
 token.json
 credentials.json
+*.docx
+scratch/

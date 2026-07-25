@@ -20,7 +20,7 @@ export const COLUMNS = [
   { key: "partyName", label: "Party Name", filterType: "text" as const, sortable: true },
   { key: "projectRefNo", label: "Project Ref No", filterType: "text" as const, sortable: true },
   { key: "enquiryTenderNo", label: "Enquiry/Tender No", filterType: "text" as const, sortable: true },
-  { key: "loiNo", label: "LOI No", filterType: "text" as const, sortable: true },
+  { key: "loiNo", label: "Reference No/LOI No/PO No", filterType: "text" as const, sortable: true },
   { key: "project", label: "Project", filterType: "text" as const, sortable: true },
   { key: "excelFiles", label: "Excel Files", filterType: null, sortable: false },
   { key: "docxStatus", label: "Generate GTP", filterType: null, sortable: true },

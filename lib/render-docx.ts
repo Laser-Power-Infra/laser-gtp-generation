@@ -1,7 +1,7 @@
 import {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   WidthType, BorderStyle, PageBreak, Header, Footer, ImageRun,
-  TableLayoutType, convertInchesToTwip, SimpleField,
+  TableLayoutType, convertInchesToTwip, SimpleField, VerticalAlign,
 } from "docx";
 import type { GTPDocumentData, GTPTable, GTPRow, GTPCell } from "@/types/gtp-types";
 import fs from "fs";
@@ -59,15 +59,58 @@ function getTableColumnCount(gtpTable: GTPTable): number {
   return max;
 }
 
+function calculateColumnWidthsInTwips(gtpTable: GTPTable): number[] {
+  const colCount = getTableColumnCount(gtpTable);
+  if (colCount === 0) return [];
+
+  // 1. Measure max text length for each column (skipping cells with colspans > 1)
+  const maxChars = new Array(colCount).fill(0);
+  for (const row of gtpTable.rows) {
+    let colIdx = 0;
+    for (const cell of row.cells) {
+      const colSpan = cell.colspan || 1;
+      const textLen = cell.text ? cell.text.length : 0;
+      if (colSpan === 1) {
+        if (colIdx < colCount) {
+          maxChars[colIdx] = Math.max(maxChars[colIdx], textLen);
+        }
+      }
+      colIdx += colSpan;
+    }
+  }
+
+  // 2. Map characters to weights with reasonable bounds.
+  const weights = maxChars.map((chars, idx) => {
+    // For Sl. No. column (idx === 0), it usually doesn't need much width but must fit "Sl. No."
+    if (idx === 0) {
+      return Math.max(14, Math.min(20, chars)); // Keep serial numbers between 14 and 20 weight
+    }
+    // Normal columns: keep weight between 10 and 80.
+    return Math.max(10, Math.min(60, chars));
+  });
+
+  // Calculate total weight
+  const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+
+  // Total printable width in twips (7.7 inches * 1440 twips/inch = 11088)
+  const totalWidthTwip = 11088;
+
+  // Map weights to twips
+  const widths = weights.map((w) => Math.round((w / totalWeight) * totalWidthTwip));
+
+  return widths;
+}
+
 function buildCell(
   gtpCell: GTPCell,
-  options?: { verticalMerge?: "restart" | "continue"; columnSpan?: number }
+  options?: { verticalMerge?: "restart" | "continue"; columnSpan?: number; widthTwip?: number }
 ): TableCell {
   return new TableCell({
     children: [
       buildParagraph(gtpCell.text, {
         bold: gtpCell.bold,
         fontSize: FONT_SIZE,
+        alignment: (options?.columnSpan ?? gtpCell.colspan ?? 1) > 1 ? "center" : undefined,
       }),
     ],
     columnSpan: options?.columnSpan ?? gtpCell.colspan,
@@ -79,11 +122,13 @@ function buildCell(
       right: BORDER,
     },
     margins: CELL_MARGINS,
-    width: { size: 1, type: WidthType.AUTO },
+    width: options?.widthTwip 
+      ? { size: options.widthTwip, type: WidthType.DXA }
+      : undefined,
   });
 }
 
-function buildContinuationCell(colSpan: number): TableCell {
+function buildContinuationCell(colSpan: number, widthTwip?: number): TableCell {
   return new TableCell({
     children: [buildParagraph("")],
     columnSpan: colSpan > 1 ? colSpan : undefined,
@@ -95,15 +140,19 @@ function buildContinuationCell(colSpan: number): TableCell {
       right: BORDER,
     },
     margins: CELL_MARGINS,
+    width: widthTwip
+      ? { size: widthTwip, type: WidthType.DXA }
+      : undefined,
   });
 }
 
-function buildRows(gtpTable: GTPTable): TableRow[] {
+function buildRows(gtpTable: GTPTable, colWidths: number[]): TableRow[] {
   const columnCount = getTableColumnCount(gtpTable);
   const active: RowspanEntry[] = [];
   const rows: TableRow[] = [];
 
-  for (const gtpRow of gtpTable.rows) {
+  for (let rowIndex = 0; rowIndex < gtpTable.rows.length; rowIndex++) {
+    const gtpRow = gtpTable.rows[rowIndex];
     const cells: TableCell[] = [];
     let colIdx = 0;
     let cellIdx = 0;
@@ -114,12 +163,27 @@ function buildRows(gtpTable: GTPTable): TableRow[] {
       );
 
       if (entry) {
-        cells.push(buildContinuationCell(entry.colSpan));
+        // Calculate width for continuation cell
+        let cellWidthTwip = 0;
+        for (let i = 0; i < entry.colSpan; i++) {
+          if (colIdx + i < colWidths.length) {
+            cellWidthTwip += colWidths[colIdx + i];
+          }
+        }
+        cells.push(buildContinuationCell(entry.colSpan, cellWidthTwip));
         colIdx += entry.colSpan;
         entry.remaining--;
       } else if (cellIdx < gtpRow.cells.length) {
         const gtpCell = gtpRow.cells[cellIdx];
         const cellSpan = gtpCell.colspan || 1;
+
+        // Calculate cell width in twips
+        let cellWidthTwip = 0;
+        for (let i = 0; i < cellSpan; i++) {
+          if (colIdx + i < colWidths.length) {
+            cellWidthTwip += colWidths[colIdx + i];
+          }
+        }
 
         if (gtpCell.rowspan && gtpCell.rowspan > 1) {
           active.push({
@@ -128,16 +192,21 @@ function buildRows(gtpTable: GTPTable): TableRow[] {
             remaining: gtpCell.rowspan - 1,
           });
           cells.push(
-            buildCell(gtpCell, { verticalMerge: "restart" })
+            buildCell(gtpCell, { 
+              verticalMerge: "restart",
+              widthTwip: cellWidthTwip 
+            })
           );
         } else {
-          cells.push(buildCell(gtpCell));
+          cells.push(buildCell(gtpCell, { widthTwip: cellWidthTwip }));
         }
 
         colIdx += cellSpan;
         cellIdx++;
       } else {
-        cells.push(buildContinuationCell(1));
+        // Calculate width for remaining columns
+        const cellWidthTwip = colIdx < colWidths.length ? colWidths[colIdx] : 0;
+        cells.push(buildContinuationCell(1, cellWidthTwip));
         colIdx++;
       }
     }
@@ -148,17 +217,24 @@ function buildRows(gtpTable: GTPTable): TableRow[] {
       }
     }
 
-    rows.push(new TableRow({ children: cells }));
+    const isHeaderRow = rowIndex === 0 || (rowIndex < 3 && gtpRow.cells.every(cell => cell.text.trim() === "" || cell.bold));
+    rows.push(new TableRow({
+      children: cells,
+      cantSplit: true,
+      tableHeader: isHeaderRow ? true : undefined,
+    }));
   }
 
   return rows;
 }
 
 function buildTable(gtpTable: GTPTable): Table {
+  const colWidths = calculateColumnWidthsInTwips(gtpTable);
   return new Table({
-    rows: buildRows(gtpTable),
+    rows: buildRows(gtpTable, colWidths),
     width: { size: 100, type: WidthType.PERCENTAGE },
     layout: TableLayoutType.FIXED,
+    columnWidths: colWidths,
   });
 }
 
@@ -217,26 +293,87 @@ export async function renderDocx(data: GTPDocumentData): Promise<Buffer> {
     children.push(buildTable(data.tables[i]));
   }
 
-  const header = new Header({
-    children: [
-      new Paragraph({
+  const HEADER_BORDER = {
+    style: BorderStyle.SINGLE,
+    size: 4, // 1/2 pt
+    color: "CCCCCC",
+  };
+
+  const companyHeaderTable = new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    layout: TableLayoutType.FIXED,
+    rows: [
+      new TableRow({
         children: [
-          new TextRun({ text: "LASER POWER AND INFRA LIMITED", bold: true, size: 40, color: "CC0000" }),
-          new ImageRun({
-            data: logoBuffer,
-            type: "jpg",
-            transformation: { width: 229, height: 92 },
+          new TableCell({
+            children: [
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: "LASER POWER AND INFRA LIMITED",
+                    bold: true,
+                    size: 32, // 16pt
+                    color: "FFA3A3",
+                    font: "Georgia",
+                  }),
+                ],
+                spacing: { before: 0, after: 40 },
+              }),
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: "Kolkata, West Bengal India; info@laserpowerinfra.com",
+                    size: 20, // 10pt
+                    color: "0047AB",
+                    font: "Arial",
+                  }),
+                ],
+                spacing: { before: 0, after: 0 },
+              }),
+            ],
+            // shading: { fill: "1F1F1F" },
+            margins: { top: 120, bottom: 120, left: 160, right: 160 },
+            width: { size: 72, type: WidthType.PERCENTAGE },
+            borders: {
+              top: HEADER_BORDER,
+              bottom: HEADER_BORDER,
+              left: HEADER_BORDER,
+              right: HEADER_BORDER,
+            },
+          }),
+          new TableCell({
+            children: [
+              new Paragraph({
+                children: [
+                  new ImageRun({
+                    data: logoBuffer,
+                    type: "jpg",
+                    transformation: { width: 160, height: 64 },
+                  }),
+                ],
+                alignment: "center",
+              }),
+            ],
+            verticalAlign: VerticalAlign.CENTER,
+            margins: { top: 60, bottom: 60, left: 60, right: 60 },
+            width: { size: 28, type: WidthType.PERCENTAGE },
+            borders: {
+              top: HEADER_BORDER,
+              bottom: HEADER_BORDER,
+              left: HEADER_BORDER,
+              right: HEADER_BORDER,
+            },
           }),
         ],
-        alignment: "center",
-        spacing: { after: 0 },
       }),
+    ],
+  });
+
+  const header = new Header({
+    children: [
+      companyHeaderTable,
       new Paragraph({
-        children: [
-          new TextRun({ text: "Kolkata, West Bengal India; info@laserpowerinfra.com", size: 18, color: "0047AB" }),
-        ],
-        alignment: "center",
-        spacing: { after: 200 },
+        spacing: { before: 120, after: 0 },
       }),
       createHeaderTable(data),
     ],
@@ -247,24 +384,24 @@ export async function renderDocx(data: GTPDocumentData): Promise<Buffer> {
       new Paragraph({
         children: [
           new ImageRun({
-            data: footerDetailsBuffer,
-            type: "jpg",
-            transformation: { width: 550, height: 70 },
-          }),
-        ],
-        alignment: "left",
-        spacing: { before: 0, after: 0 },
-      }),
-      new Paragraph({
-        children: [
-          new ImageRun({
             data: signatureBuffer,
             type: "jpg",
             transformation: { width: 148, height: 78 },
           }),
         ],
         alignment: "right",
-        spacing: { before: 0, after: 0 },
+        spacing: { before: 0, after: 60 },
+      }),
+      new Paragraph({
+        children: [
+          new ImageRun({
+            data: footerDetailsBuffer,
+            type: "jpg",
+            transformation: { width: 730, height: 93 },
+          }),
+        ],
+        alignment: "center",
+        spacing: { before: 0, after: 60 },
       }),
       new Paragraph({
         children: [
@@ -273,12 +410,7 @@ export async function renderDocx(data: GTPDocumentData): Promise<Buffer> {
           new SimpleField(" NUMPAGES "),
         ],
         alignment: "center",
-        spacing: { before: 200, after: 0 },
-      }),
-      new Paragraph({
-        children: [new TextRun({ text: "LASER POWER AND INFRA LIMITED", size: 14, color: "666666" })],
-        alignment: "center",
-        spacing: { before: 0, after: 0 },
+        spacing: { before: 60, after: 0 },
       }),
     ],
   });
@@ -290,9 +422,9 @@ export async function renderDocx(data: GTPDocumentData): Promise<Buffer> {
           page: {
             margin: {
               top: convertInchesToTwip(1),
-              right: convertInchesToTwip(1),
+              right: convertInchesToTwip(0.4),
               bottom: convertInchesToTwip(1.5),
-              left: convertInchesToTwip(1),
+              left: convertInchesToTwip(0.4),
             },
             borders: {
               pageBorders: { display: "allPages", offsetFrom: "page" },
