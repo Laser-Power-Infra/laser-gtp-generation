@@ -15,6 +15,8 @@ type DataState = ReturnType<typeof dataAdapter.getInitialState> & {
   loaded: boolean;
   syncing: boolean;
   childItems: Record<string, ChildItem[]>;
+  /** Session-only per-record docx page orientation. Not persisted. */
+  recordOrientations: Record<string, "portrait" | "landscape">;
 };
 
 const initialState: DataState = {
@@ -23,6 +25,7 @@ const initialState: DataState = {
   loaded: false,
   syncing: false,
   childItems: {},
+  recordOrientations: {},
 };
 
 function defaults(docketNumber: string): Partial<DocketRecord> {
@@ -125,6 +128,12 @@ const dataSlice = createSlice({
     setChildItems(state, action: PayloadAction<{ id: string; children: ChildItem[] }>) {
       state.childItems[action.payload.id] = action.payload.children;
     },
+    setRecordOrientation(
+      state,
+      action: PayloadAction<{ id: string; orientation: "portrait" | "landscape" }>
+    ) {
+      state.recordOrientations[action.payload.id] = action.payload.orientation;
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -171,7 +180,7 @@ const dataSlice = createSlice({
   },
 });
 
-export const { setChildItems } = dataSlice.actions;
+export const { setChildItems, setRecordOrientation } = dataSlice.actions;
 
 import type { RootState } from "@/store";
 const dataSelectors = dataAdapter.getSelectors<RootState>((s) => s.data);
@@ -188,6 +197,8 @@ export const selectRecordsSyncing = (state: RootState) => state.data.syncing;
 export const selectChildItems = (state: RootState) => state.data.childItems;
 export const selectChildrenByParentId = (parentId: string) =>
   (state: RootState) => state.data.childItems[parentId] || [];
+export const selectRecordOrientation = (id: string) =>
+  (state: RootState) => state.data.recordOrientations[id] ?? "portrait";
 
 export const selectAllDenormalized = createSelector(
   [selectAllRecords, selectChildItems],

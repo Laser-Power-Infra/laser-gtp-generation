@@ -12,11 +12,17 @@ function extractFileId(driveUrl: string): string | null {
 }
 
 export async function POST(request: Request) {
-  const { recordId } = await request.json();
+  const body = await request.json();
+  const { recordId, orientation } = body as {
+    recordId?: string;
+    orientation?: "portrait" | "landscape";
+  };
 
   if (!recordId) {
     return NextResponse.json({ error: "Missing recordId" }, { status: 400 });
   }
+
+  const pageOrientation = orientation === "landscape" ? "landscape" : "portrait";
 
   const record = await prisma.docketRecord.findUnique({
     where: { id: recordId },
@@ -83,7 +89,7 @@ export async function POST(request: Request) {
     };
 
     const outputPath = path.join(tmpDir, "output.docx");
-    const docxBuffer = await generateGTPDocx(data, { outputPath });
+    const docxBuffer = await generateGTPDocx(data, { outputPath, orientation: pageOrientation });
 
     const filename = `${record.docketNumber || "GTP"}_v${version}.docx`;
 

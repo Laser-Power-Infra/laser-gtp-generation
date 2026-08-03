@@ -23,6 +23,7 @@ export const COLUMNS = [
   { key: "loiNo", label: "Reference No/LOI No/PO No", filterType: "text" as const, sortable: true },
   { key: "project", label: "Project", filterType: "text" as const, sortable: true },
   { key: "excelFiles", label: "Excel Files", filterType: null, sortable: false },
+  { key: "orientation", label: "Orientation", filterType: null, sortable: false },
   { key: "docxStatus", label: "Generate GTP", filterType: null, sortable: true },
 ];
 

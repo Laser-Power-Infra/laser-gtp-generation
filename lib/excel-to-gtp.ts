@@ -1,11 +1,15 @@
 import ExcelJS from "exceljs";
-import { GTPTable, GTPRow, GTPCell } from "@/types/gtp-types";
+import { GTPTable, GTPRow, GTPCell, GTPAlignment } from "@/types/gtp-types";
 
 /**
  * Parses every sheet in one Excel workbook into one GTPTable per sheet.
  * Handles merged cells by converting them to colspan/rowspan on the
  * top-left cell of the merge, and skipping the covered cells so they
  * don't render as empty duplicate <td>s.
+ *
+ * Formatting (bold, font size/name/color, alignment, fill) and the sheet's
+ * real column widths are carried over so the generated docx keeps the
+ * source sheet's look instead of being re-laid-out from scratch.
  */
 export async function parseWorkbookToGTPTables(filePath: string): Promise<GTPTable[]> {
   const workbook = new ExcelJS.Workbook();
@@ -44,10 +48,10 @@ export async function parseWorkbookToGTPTables(filePath: string): Promise<GTPTab
     }
 
     const rows: GTPRow[] = [];
+    const colCount = worksheet.columnCount || 0;
 
     worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
       const cells: GTPCell[] = [];
-      const colCount = worksheet.columnCount || row.cellCount;
 
       for (let colNumber = 1; colNumber <= colCount; colNumber++) {
         const key = `${rowNumber},${colNumber}`;
@@ -56,13 +60,19 @@ export async function parseWorkbookToGTPTables(filePath: string): Promise<GTPTab
         const cell = row.getCell(colNumber);
         const merge = mergeInfo.get(key);
         const text = sanitizeXml(cellValueToString(cell.value));
-        const bold = !!cell.font?.bold;
+        const fmt = extractFormatting(cell);
 
         cells.push({
           text,
           ...(merge?.colspan && merge.colspan > 1 ? { colspan: merge.colspan } : {}),
           ...(merge?.rowspan && merge.rowspan > 1 ? { rowspan: merge.rowspan } : {}),
-          ...(bold ? { bold: true } : {}),
+          ...(fmt.bold ? { bold: true } : {}),
+          ...(fmt.fontSize ? { fontSize: fmt.fontSize } : {}),
+          ...(fmt.fontName ? { fontName: fmt.fontName } : {}),
+          ...(fmt.color ? { color: fmt.color } : {}),
+          ...(fmt.fill ? { fill: fmt.fill } : {}),
+          ...(fmt.alignment ? { alignment: fmt.alignment } : {}),
+          ...(fmt.wrapText ? { wrapText: true } : {}),
         });
       }
 
@@ -72,10 +82,22 @@ export async function parseWorkbookToGTPTables(filePath: string): Promise<GTPTab
       }
     });
 
+    // Skip metadata-only sheets (e.g. a sheet that just holds "UTILITY:" /
+    // "RC NO.:" rows with no GTP table content). A real GTP sheet always has
+    // at least 3 rows with data and a handful of populated cells.
+    let nonEmptyCells = 0;
+    for (const row of rows) {
+      for (const cell of row.cells) {
+        if (cell.text.trim() !== "") nonEmptyCells++;
+      }
+    }
+    if (rows.length < 3 || nonEmptyCells < 5) return;
+
     tables.push({
       sheetName: worksheet.name,
       sourceFile: fileName,
       rows,
+      columnWidths: readColumnWidths(worksheet, colCount),
     });
   });
 
@@ -90,6 +112,76 @@ export async function parseWorkbooksToGTPTables(filePaths: string[]): Promise<GT
     all.push(...tables);
   }
   return all;
+}
+
+function readColumnWidths(worksheet: ExcelJS.Worksheet, colCount: number): number[] {
+  const widths: number[] = [];
+  for (let c = 1; c <= colCount; c++) {
+    const width = worksheet.getColumn(c).width;
+    widths.push(typeof width === "number" && width > 0 ? width : 10);
+  }
+  return widths;
+}
+
+interface CellFormatting {
+  bold: boolean;
+  fontSize?: number;
+  fontName?: string;
+  color?: string;
+  fill?: string;
+  alignment?: GTPAlignment;
+  wrapText?: boolean;
+}
+
+function extractFormatting(cell: ExcelJS.Cell): CellFormatting {
+  const font = cell.font;
+  let bold = !!font?.bold;
+  let fontSize: number | undefined;
+  let fontName: string | undefined;
+  let color: string | undefined;
+
+  if (font) {
+    if (font.size) fontSize = font.size;
+    if (font.name) fontName = font.name;
+    if (font.color?.argb) color = normalizeColor(font.color.argb);
+  }
+
+  // Rich text: bold may live on individual runs rather than the cell font.
+  if (typeof cell.value === "object" && cell.value !== null) {
+    const richText = (cell.value as { richText?: Array<{ font?: ExcelJS.Font }> }).richText;
+    if (Array.isArray(richText) && richText.length > 0) {
+      if (!bold) bold = richText.some((rt) => rt.font?.bold);
+      if (!fontSize && richText[0].font?.size) fontSize = richText[0].font.size;
+      if (!fontName && richText[0].font?.name) fontName = richText[0].font.name;
+      if (!color && richText[0].font?.color?.argb) color = normalizeColor(richText[0].font.color.argb);
+    }
+  }
+
+  let fill: string | undefined;
+  const cellFill = cell.fill as { type?: string; pattern?: string; fgColor?: { argb?: string } } | undefined;
+  if (cellFill && cellFill.type === "pattern" && cellFill.pattern === "solid" && cellFill.fgColor?.argb) {
+    fill = normalizeColor(cellFill.fgColor.argb);
+  }
+
+  let alignment: GTPAlignment | undefined;
+  let wrapText = false;
+  const cellAlignment = cell.alignment;
+  if (cellAlignment) {
+    wrapText = !!cellAlignment.wrapText;
+    const h = cellAlignment.horizontal as GTPAlignment | undefined;
+    if (h === "left" || h === "center" || h === "right" || h === "justify" || h === "distributed") {
+      alignment = h;
+    }
+  }
+
+  return { bold, fontSize, fontName, color, fill, alignment, wrapText };
+}
+
+/** Accepts "FFAABBCC" or "AABBCC"; strips the alpha prefix when 8 hex chars. */
+function normalizeColor(argb: string): string {
+  const hex = argb.replace(/^#/, "");
+  if (/^[0-9a-fA-F]{8}$/.test(hex)) return hex.slice(2);
+  return hex;
 }
 
 function sanitizeXml(s: string): string {
