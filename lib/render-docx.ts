@@ -4,6 +4,7 @@ import {
   TableLayoutType, convertInchesToTwip, SimpleField, VerticalAlign,
 } from "docx";
 import type { GTPDocumentData, GTPTable, GTPRow, GTPCell } from "@/types/gtp-types";
+import { applyLetterheadFooter } from "./apply-letterhead-footer";
 import fs from "fs";
 import path from "path";
 
@@ -12,6 +13,11 @@ export type PageOrientation = "portrait" | "landscape";
 export interface RenderDocxOptions {
   /** Page orientation for the whole document. Defaults to "portrait". */
   orientation?: PageOrientation;
+  /**
+   * Whether to render the OWNER / PROJECT / CONTRACTOR / LOI NO. title block
+   * in the page header. Defaults to true.
+   */
+  showTitleBlock?: boolean;
 }
 
 const BORDER = {
@@ -29,8 +35,9 @@ const PAGE_SIZE = { width: 11906, height: 16838 }; // A4 portrait twips
 const PAGE_MARGIN = {
   top: convertInchesToTwip(1),
   right: convertInchesToTwip(0.4),
-  bottom: convertInchesToTwip(1.5),
+  bottom: 1134, // 0.79", matching the letterhead
   left: convertInchesToTwip(0.4),
+  footer: 0, // sit the letterhead footer flush at the page bottom
 };
 
 interface RowspanEntry {
@@ -410,16 +417,6 @@ export async function renderDocx(
       children.push(buildPageBreak());
     }
 
-    children.push(
-      new Paragraph({
-        children: [
-          new TextRun({ text: data.tables[i].sheetName, bold: true, size: 22 }),
-        ],
-        alignment: "center",
-        spacing: { after: 120 },
-      })
-    );
-
     children.push(buildTable(data.tables[i], printableWidth));
   }
 
@@ -498,14 +495,18 @@ export async function renderDocx(
     ],
   });
 
+  const headerChildren: (Paragraph | Table)[] = [
+    companyHeaderTable,
+    new Paragraph({
+      spacing: { before: 120, after: 0 },
+    }),
+  ];
+  if (options.showTitleBlock !== false) {
+    headerChildren.push(createHeaderTable(data));
+  }
+
   const header = new Header({
-    children: [
-      companyHeaderTable,
-      new Paragraph({
-        spacing: { before: 120, after: 0 },
-      }),
-      createHeaderTable(data),
-    ],
+    children: headerChildren,
   });
 
   const footer = new Footer({
@@ -571,5 +572,10 @@ export async function renderDocx(
     ],
   });
 
-  return Packer.toBuffer(doc);
+  const buffer = await Packer.toBuffer(doc);
+
+  const pageWidthTwips =
+    orientation === "landscape" ? PAGE_SIZE.height : PAGE_SIZE.width;
+
+  return applyLetterheadFooter(buffer, pageWidthTwips);
 }

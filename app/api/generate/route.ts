@@ -13,9 +13,10 @@ function extractFileId(driveUrl: string): string | null {
 
 export async function POST(request: Request) {
   const body = await request.json();
-  const { recordId, orientation } = body as {
+  const { recordId, orientation, showTitleBlock } = body as {
     recordId?: string;
     orientation?: "portrait" | "landscape";
+    showTitleBlock?: boolean;
   };
 
   if (!recordId) {
@@ -89,7 +90,11 @@ export async function POST(request: Request) {
     };
 
     const outputPath = path.join(tmpDir, "output.docx");
-    const docxBuffer = await generateGTPDocx(data, { outputPath, orientation: pageOrientation });
+    const docxBuffer = await generateGTPDocx(data, {
+      outputPath,
+      orientation: pageOrientation,
+      showTitleBlock,
+    });
 
     const filename = `${record.docketNumber || "GTP"}_v${version}.docx`;
 

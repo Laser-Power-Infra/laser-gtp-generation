@@ -4,9 +4,10 @@ import React, { useState, useCallback, useRef } from "react";
 import { ChevronRight, ChevronDown, Edit2, FileText, Upload, Plus, FileSpreadsheet } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { toggleRowExpand } from "@/store/slices/uiSlice";
-import { updateRecordField, setRecordOrientation, selectRecordOrientation } from "@/store/slices/dataSlice";
+import { updateRecordField, setRecordOrientation, setRecordShowTitleBlock, selectRecordOrientation, selectRecordShowTitleBlock } from "@/store/slices/dataSlice";
 import { COLUMNS } from "./data-table-container";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -27,6 +28,7 @@ const statusBadgeVariant: Record<string, "default" | "secondary" | "outline" | "
 function EditableCell({ record, field }: { record: DocketRecord; field: string }) {
   const dispatch = useAppDispatch();
   const orientation = useAppSelector(selectRecordOrientation(record.id));
+  const showTitleBlock = useAppSelector(selectRecordShowTitleBlock(record.id));
   const [editing, setEditing] = useState(false);
   const [generating, setGenerating] = useState(false);
   const prevValue = String((record as unknown as Record<string, unknown>)[field] ?? "");
@@ -53,7 +55,7 @@ function EditableCell({ record, field }: { record: DocketRecord; field: string }
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recordId: record.id, orientation }),
+        body: JSON.stringify({ recordId: record.id, orientation, showTitleBlock }),
       });
       if (!res.ok) throw new Error(await res.text());
       const version = res.headers.get("X-Generation-Version") || "1";
@@ -141,6 +143,7 @@ function EditableCell({ record, field }: { record: DocketRecord; field: string }
 function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }) {
   const dispatch = useAppDispatch();
   const orientation = useAppSelector(selectRecordOrientation(record.id));
+  const showTitleBlock = useAppSelector(selectRecordShowTitleBlock(record.id));
   const [generating, setGenerating] = useState(false);
   const value = String((record as unknown as Record<string, unknown>)[field] ?? "");
 
@@ -151,7 +154,7 @@ function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recordId: record.id, orientation }),
+        body: JSON.stringify({ recordId: record.id, orientation, showTitleBlock }),
       });
       if (!res.ok) throw new Error(await res.text());
       const version = res.headers.get("X-Generation-Version") || "1";
@@ -295,6 +298,24 @@ function OrientationCell({ record }: { record: DocketRecord }) {
   );
 }
 
+function TitleBlockCell({ record }: { record: DocketRecord }) {
+  const dispatch = useAppDispatch();
+  const showTitleBlock = useAppSelector(selectRecordShowTitleBlock(record.id));
+
+  return (
+    <div onClick={(e) => e.stopPropagation()} className="flex items-center justify-center">
+      <Checkbox
+        checked={showTitleBlock}
+        onCheckedChange={(checked) =>
+          dispatch(setRecordShowTitleBlock({ id: record.id, show: checked }))
+        }
+        aria-label="Show title block"
+        className="cursor-pointer"
+      />
+    </div>
+  );
+}
+
 function ChildSubRow({ child, colCount }: { child: ChildItem; colCount: number }) {
   return (
     <tr className="bg-muted/10 hover:bg-muted/20">
@@ -334,9 +355,11 @@ export function DataTableRow({ record }: RowProps) {
             {idx === 0 && !hasChildren && <span className="inline-block w-[22px]" />}
             {col.key === "orientation"
               ? <OrientationCell record={record} />
-              : (col.key === "loiNo" || col.key === "project")
-                ? <EditableCell record={record} field={col.key} />
-                : <ReadonlyCell record={record} field={col.key} />
+              : col.key === "showTitleBlock"
+                ? <TitleBlockCell record={record} />
+                : (col.key === "loiNo" || col.key === "project")
+                  ? <EditableCell record={record} field={col.key} />
+                  : <ReadonlyCell record={record} field={col.key} />
             }
           </td>
         ))}

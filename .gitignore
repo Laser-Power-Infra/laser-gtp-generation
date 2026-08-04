@@ -46,4 +46,7 @@ token.json
 credentials.json
 *.docx
 *.xlsx
+*.emf
+*.rels*
+*.xml
 scratch/
