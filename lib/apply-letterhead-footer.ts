@@ -2,7 +2,7 @@ import JSZip from "jszip";
 import fs from "fs";
 import path from "path";
 
-const LETTERHEAD_FOOTER_DIR = path.join(process.cwd(), "lib", "letterhead-footer");
+const LETTERHEAD_FOOTER_DIR = path.join(process.cwd(), "public", "letterhead-footer");
 
 /** Letterhead page is A4 landscape: width 16839 twips, side margins 1440 twips each. */
 const LETTERHEAD_PAGE_WIDTH_TWIPS = 16839;
