@@ -46,14 +46,14 @@ token.json
 credentials.json
 *.docx
 *.xlsx
-*.emf
-*.rels*
-*.xml
+# *.emf
+# *.rels*
+# *.xml
 scratch/
 
 # letterhead footer assets must ship with the deployment
-!public/letterhead-footer/
-!public/letterhead-footer/footer.xml
-!public/letterhead-footer/footer.rels
-!public/letterhead-footer/media/
-!public/letterhead-footer/media/image4.emf
+# !public/letterhead-footer/
+# !public/letterhead-footer/footer.xml
+# !public/letterhead-footer/footer.rels
+# !public/letterhead-footer/media/
+# !public/letterhead-footer/media/image4.emf
