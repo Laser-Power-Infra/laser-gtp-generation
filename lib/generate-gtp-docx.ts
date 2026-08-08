@@ -4,7 +4,8 @@ import { GTPDocumentData } from "@/types/gtp-types";
 export interface GenerateDocxOptions {
   outputPath: string;
   orientation?: RenderDocxOptions["orientation"];
-  showTitleBlock?: RenderDocxOptions["showTitleBlock"];
+  titleBlockMode?: RenderDocxOptions["titleBlockMode"];
+  titleBlockCustomRows?: RenderDocxOptions["titleBlockCustomRows"];
 }
 
 export async function generateGTPDocx(
@@ -13,7 +14,8 @@ export async function generateGTPDocx(
 ): Promise<Buffer> {
   const buffer = await renderDocx(data, {
     orientation: options.orientation,
-    showTitleBlock: options.showTitleBlock,
+    titleBlockMode: options.titleBlockMode,
+    titleBlockCustomRows: options.titleBlockCustomRows,
   });
 
   const fs = await import("fs");

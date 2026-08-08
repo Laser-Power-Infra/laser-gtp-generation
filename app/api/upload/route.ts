@@ -44,3 +44,25 @@ export async function POST(request: Request) {
     );
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    const { attachmentId } = await request.json();
+    if (!attachmentId) {
+      return NextResponse.json({ error: "Missing attachmentId" }, { status: 400 });
+    }
+
+    console.log("[Upload] Deleting attachment:", attachmentId);
+
+    await prisma.attachment.delete({ where: { id: attachmentId } });
+
+    console.log("[Upload] Deleted attachment:", attachmentId);
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("[Upload] Delete error:", error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Delete failed" },
+      { status: 500 }
+    );
+  }
+}

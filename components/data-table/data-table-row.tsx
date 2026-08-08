@@ -1,18 +1,18 @@
 "use client";
 
 import React, { useState, useCallback, useRef } from "react";
-import { ChevronRight, ChevronDown, Edit2, FileText, Upload, Plus, FileSpreadsheet } from "lucide-react";
+import { ChevronRight, ChevronDown, Edit2, FileText, Upload, Plus, FileSpreadsheet, Trash2 } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { toggleRowExpand } from "@/store/slices/uiSlice";
-import { updateRecordField, setRecordOrientation, setRecordShowTitleBlock, selectRecordOrientation, selectRecordShowTitleBlock } from "@/store/slices/dataSlice";
+import { updateRecordField, setRecordOrientation, deleteRecordFile, selectRecordOrientation } from "@/store/slices/dataSlice";
 import { COLUMNS } from "./data-table-container";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import type { DocketRecord, ChildItem } from "@/types";
+import TitleBlockDialog from "@/components/dialogs/title-block-dialog";
 
 interface RowProps {
   record: DocketRecord & { childItems: ChildItem[] };
@@ -28,7 +28,6 @@ const statusBadgeVariant: Record<string, "default" | "secondary" | "outline" | "
 function EditableCell({ record, field }: { record: DocketRecord; field: string }) {
   const dispatch = useAppDispatch();
   const orientation = useAppSelector(selectRecordOrientation(record.id));
-  const showTitleBlock = useAppSelector(selectRecordShowTitleBlock(record.id));
   const [editing, setEditing] = useState(false);
   const [generating, setGenerating] = useState(false);
   const prevValue = String((record as unknown as Record<string, unknown>)[field] ?? "");
@@ -55,7 +54,7 @@ function EditableCell({ record, field }: { record: DocketRecord; field: string }
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recordId: record.id, orientation, showTitleBlock }),
+        body: JSON.stringify({ recordId: record.id, orientation }),
       });
       if (!res.ok) throw new Error(await res.text());
       const version = res.headers.get("X-Generation-Version") || "1";
@@ -143,7 +142,6 @@ function EditableCell({ record, field }: { record: DocketRecord; field: string }
 function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }) {
   const dispatch = useAppDispatch();
   const orientation = useAppSelector(selectRecordOrientation(record.id));
-  const showTitleBlock = useAppSelector(selectRecordShowTitleBlock(record.id));
   const [generating, setGenerating] = useState(false);
   const value = String((record as unknown as Record<string, unknown>)[field] ?? "");
 
@@ -154,7 +152,7 @@ function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recordId: record.id, orientation, showTitleBlock }),
+        body: JSON.stringify({ recordId: record.id, orientation }),
       });
       if (!res.ok) throw new Error(await res.text());
       const version = res.headers.get("X-Generation-Version") || "1";
@@ -222,6 +220,10 @@ function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }
       if (fileInputRef.current) fileInputRef.current.value = "";
     };
 
+    const handleDeleteFile = (attachmentId: string) => {
+      dispatch(deleteRecordFile({ recordId: record.id, attachmentId }));
+    };
+
     if (files.length === 0) {
       return (
         <>
@@ -254,13 +256,21 @@ function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }
         </div>
         <input ref={fileInputRef} type="file" multiple accept=".xlsx,.xls" onChange={handleUpload} className="hidden" />
         {files.slice(0, 3).map((f, i) => (
-          <a key={i} href={f.url} target="_blank" rel="noopener noreferrer"
-            className="flex items-center gap-1 text-xs text-[#0f62fe] hover:underline truncate"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <FileText className="h-3 w-3 shrink-0" />
-            <span className="truncate">{f.name}</span>
-          </a>
+          <div key={i} className="flex items-center gap-1 group/file" onClick={(e) => e.stopPropagation()}>
+            <a href={f.url} target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1 text-xs text-[#0f62fe] hover:underline truncate flex-1 min-w-0"
+            >
+              <FileText className="h-3 w-3 shrink-0" />
+              <span className="truncate">{f.name}</span>
+            </a>
+            <button
+              onClick={() => handleDeleteFile(f.id)}
+              title={`Delete ${f.name}`}
+              className="text-gray-400 hover:text-red-500 shrink-0 rounded p-0.5 hover:bg-red-50 transition-colors cursor-pointer"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          </div>
         ))}
         {files.length > 3 && (
           <span className="text-[10px] text-muted-foreground">+{files.length - 3} more</span>
@@ -299,19 +309,32 @@ function OrientationCell({ record }: { record: DocketRecord }) {
 }
 
 function TitleBlockCell({ record }: { record: DocketRecord }) {
-  const dispatch = useAppDispatch();
-  const showTitleBlock = useAppSelector(selectRecordShowTitleBlock(record.id));
+  const [isOpen, setIsOpen] = useState(false);
+  const mode = record.titleBlockMode ?? "standard";
+  const customCount = record.titleBlockCustomRows?.length ?? 0;
 
   return (
-    <div onClick={(e) => e.stopPropagation()} className="flex items-center justify-center">
-      <Checkbox
-        checked={showTitleBlock}
-        onCheckedChange={(checked) =>
-          dispatch(setRecordShowTitleBlock({ id: record.id, show: checked }))
-        }
-        aria-label="Show title block"
-        className="cursor-pointer"
-      />
+    <div onClick={(e) => e.stopPropagation()} className="flex items-center">
+      <button
+        onClick={() => setIsOpen(true)}
+        className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 transition-colors cursor-pointer capitalize"
+        title="Customize title block"
+      >
+        <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+        <span>{mode}</span>
+        {mode === "custom" && customCount > 0 && (
+          <span className="text-[10px] text-muted-foreground font-medium">({customCount})</span>
+        )}
+      </button>
+      {isOpen && (
+        <TitleBlockDialog
+          isOpen={isOpen}
+          onClose={() => setIsOpen(false)}
+          recordId={record.id}
+          mode={mode}
+          customRows={record.titleBlockCustomRows ?? []}
+        />
+      )}
     </div>
   );
 }

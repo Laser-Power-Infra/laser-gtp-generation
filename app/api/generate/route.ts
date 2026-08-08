@@ -13,10 +13,9 @@ function extractFileId(driveUrl: string): string | null {
 
 export async function POST(request: Request) {
   const body = await request.json();
-  const { recordId, orientation, showTitleBlock } = body as {
+  const { recordId, orientation } = body as {
     recordId?: string;
     orientation?: "portrait" | "landscape";
-    showTitleBlock?: boolean;
   };
 
   if (!recordId) {
@@ -40,6 +39,16 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
+
+  const titleBlockMode =
+    record.titleBlockMode === "custom" || record.titleBlockMode === "none"
+      ? record.titleBlockMode
+      : "standard";
+  const titleBlockCustomRows: { label: string; value: string }[] = Array.isArray(
+    record.titleBlockCustomRows
+  )
+    ? (record.titleBlockCustomRows as unknown as { label: string; value: string }[])
+    : [];
 
   const version = (record.generationVersion ?? 0) + 1;
 
@@ -93,7 +102,8 @@ export async function POST(request: Request) {
     const docxBuffer = await generateGTPDocx(data, {
       outputPath,
       orientation: pageOrientation,
-      showTitleBlock,
+      titleBlockMode,
+      titleBlockCustomRows,
     });
 
     const filename = `${record.docketNumber || "GTP"}_v${version}.docx`;

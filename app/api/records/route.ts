@@ -7,7 +7,7 @@ export async function GET() {
   try {
     const records = await prisma.docketRecord.findMany({
       orderBy: { docketNumber: "asc" },
-      include: { attachments: { select: { name: true, url: true } } },
+      include: { attachments: { select: { id: true, name: true, url: true } } },
     });
     console.log("[API] GET result:", records.length, "records found");
     return NextResponse.json({ records });
@@ -20,7 +20,7 @@ export async function GET() {
   }
 }
 
-const ALLOWED_FIELDS = new Set(["loiNo", "project", "projectRefNo", "partyName", "docketNumber", "utility", "enquiryTenderNo", "excelFiles", "docxStatus", "generationVersion"]);
+const ALLOWED_FIELDS = new Set(["loiNo", "project", "projectRefNo", "partyName", "docketNumber", "utility", "enquiryTenderNo", "excelFiles", "docxStatus", "generationVersion", "titleBlockMode", "titleBlockCustomRows"]);
 
 const VIRTUAL_FIELDS = new Set(["excelFiles", "docxStatus"]);
 
@@ -63,7 +63,7 @@ export async function POST() {
 
     if (smartsheetRecords.length === 0) {
       console.warn("[API] No records returned from Smartsheet");
-      const allRecords = await prisma.docketRecord.findMany({ orderBy: { docketNumber: "asc" }, include: { attachments: { select: { name: true, url: true } } } });
+      const allRecords = await prisma.docketRecord.findMany({ orderBy: { docketNumber: "asc" }, include: { attachments: { select: { id: true, name: true, url: true } } } });
       return NextResponse.json({ records: allRecords, syncedCount: 0 });
     }
 
@@ -115,7 +115,7 @@ export async function POST() {
 
     const allRecords = await prisma.docketRecord.findMany({
       orderBy: { docketNumber: "asc" },
-      include: { attachments: { select: { name: true, url: true } } },
+      include: { attachments: { select: { id: true, name: true, url: true } } },
     });
     console.log("[API] Returning", allRecords.length, "records from DB after sync");
 

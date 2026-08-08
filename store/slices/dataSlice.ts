@@ -17,8 +17,6 @@ type DataState = ReturnType<typeof dataAdapter.getInitialState> & {
   childItems: Record<string, ChildItem[]>;
   /** Session-only per-record docx page orientation. Not persisted. */
   recordOrientations: Record<string, "portrait" | "landscape">;
-  /** Session-only per-record "show title block" flag. Not persisted. */
-  recordShowTitleBlock: Record<string, boolean>;
 };
 
 const initialState: DataState = {
@@ -28,12 +26,13 @@ const initialState: DataState = {
   syncing: false,
   childItems: {},
   recordOrientations: {},
-  recordShowTitleBlock: {},
 };
 
 function defaults(docketNumber: string): Partial<DocketRecord> {
   return {
     excelFiles: [],
+    titleBlockMode: "standard",
+    titleBlockCustomRows: [],
     docxStatus: "not_generated",
   };
 }
@@ -55,12 +54,19 @@ interface DbRecord {
   Project: string;
   enquiryTenderNo: string;
   generationVersion: number;
+  titleBlockMode: string | null;
+  titleBlockCustomRows: unknown;
   createdAt: string;
   updatedAt: string;
-  attachments: { name: string; url: string }[];
+  attachments: { id: string; name: string; url: string }[];
 }
 
 function toDocketRecord(r: DbRecord, existing: DocketRecord | undefined): DocketRecord {
+  const rawRows = Array.isArray(r.titleBlockCustomRows) ? r.titleBlockCustomRows : [];
+  const customRows = rawRows.map((row) => ({
+    label: (row as { label?: string } | null)?.label ?? "",
+    value: (row as { value?: string } | null)?.value ?? "",
+  }));
   return {
     id: r.id,
     docketNumber: r.docketNumber,
@@ -71,7 +77,10 @@ function toDocketRecord(r: DbRecord, existing: DocketRecord | undefined): Docket
     project: r.Project ?? "",
     enquiryTenderNo: r.enquiryTenderNo,
     generationVersion: r.generationVersion ?? 0,
-    excelFiles: existing?.excelFiles ?? r.attachments.map((a) => ({ name: a.name, url: a.url })),
+    excelFiles: existing?.excelFiles ?? r.attachments.map((a) => ({ id: a.id, name: a.name, url: a.url })),
+    titleBlockMode: (existing?.titleBlockMode ??
+      (r.titleBlockMode === "custom" || r.titleBlockMode === "none" ? r.titleBlockMode : "standard")) as DocketRecord["titleBlockMode"],
+    titleBlockCustomRows: existing?.titleBlockCustomRows ?? customRows,
     docxStatus: (existing?.docxStatus as DocketRecord["docxStatus"]) ?? "not_generated",
     docxGeneratedAt: existing?.docxGeneratedAt,
     docxProgress: existing?.docxProgress,
@@ -124,6 +133,22 @@ export const updateRecordField = createAsyncThunk(
   }
 );
 
+export const deleteRecordFile = createAsyncThunk(
+  "data/deleteRecordFile",
+  async ({ recordId, attachmentId }: { recordId: string; attachmentId: string }, { rejectWithValue }) => {
+    const res = await fetch("/api/upload", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attachmentId }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      return rejectWithValue(text);
+    }
+    return { recordId, attachmentId };
+  }
+);
+
 const dataSlice = createSlice({
   name: "data",
   initialState,
@@ -136,12 +161,6 @@ const dataSlice = createSlice({
       action: PayloadAction<{ id: string; orientation: "portrait" | "landscape" }>
     ) {
       state.recordOrientations[action.payload.id] = action.payload.orientation;
-    },
-    setRecordShowTitleBlock(
-      state,
-      action: PayloadAction<{ id: string; show: boolean }>
-    ) {
-      state.recordShowTitleBlock[action.payload.id] = action.payload.show;
     },
   },
   extraReducers: (builder) => {
@@ -185,11 +204,33 @@ const dataSlice = createSlice({
         toast.error("Failed to update field", {
           description: action.payload as string ?? "Unknown error",
         });
+      })
+      .addCase(deleteRecordFile.pending, (_, action) => {
+        toast.loading("Deleting file...", { id: `delete-${action.meta.arg.attachmentId}` });
+      })
+      .addCase(deleteRecordFile.fulfilled, (state, action) => {
+        const { recordId, attachmentId } = action.payload;
+        const record = state.entities[recordId];
+        if (record) {
+          dataAdapter.updateOne(state, {
+            id: recordId,
+            changes: {
+              excelFiles: record.excelFiles.filter((f) => f.id !== attachmentId),
+            },
+          });
+        }
+        toast.success("File deleted", { id: `delete-${attachmentId}` });
+      })
+      .addCase(deleteRecordFile.rejected, (_, action) => {
+        toast.error("Failed to delete file", {
+          id: `delete-${action.meta.arg.attachmentId}`,
+          description: action.payload as string ?? "Unknown error",
+        });
       });
   },
 });
 
-export const { setChildItems, setRecordOrientation, setRecordShowTitleBlock } = dataSlice.actions;
+export const { setChildItems, setRecordOrientation } = dataSlice.actions;
 
 import type { RootState } from "@/store";
 const dataSelectors = dataAdapter.getSelectors<RootState>((s) => s.data);
@@ -208,8 +249,6 @@ export const selectChildrenByParentId = (parentId: string) =>
   (state: RootState) => state.data.childItems[parentId] || [];
 export const selectRecordOrientation = (id: string) =>
   (state: RootState) => state.data.recordOrientations[id] ?? "portrait";
-export const selectRecordShowTitleBlock = (id: string) =>
-  (state: RootState) => state.data.recordShowTitleBlock[id] ?? true;
 
 export const selectAllDenormalized = createSelector(
   [selectAllRecords, selectChildItems],

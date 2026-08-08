@@ -12,14 +12,26 @@ import path from "path";
 
 export type PageOrientation = "portrait" | "landscape";
 
+export type TitleBlockMode = "standard" | "custom" | "none";
+
+export interface TitleBlockRow {
+  label: string;
+  value: string;
+}
+
 export interface RenderDocxOptions {
   /** Page orientation for the whole document. Defaults to "portrait". */
   orientation?: PageOrientation;
   /**
-   * Whether to render the OWNER / PROJECT / CONTRACTOR / LOI NO. title block
-   * in the page header. Defaults to true.
+   * Which title block to render in the page header.
+   * - "standard": the OWNER / PROJECT / CONTRACTOR / LOI NO. block.
+   * - "custom": a user-defined label/value block (see titleBlockCustomRows).
+   * - "none": no title block.
+   * Defaults to "standard".
    */
-  showTitleBlock?: boolean;
+  titleBlockMode?: TitleBlockMode;
+  /** Label/value rows used when titleBlockMode is "custom". */
+  titleBlockCustomRows?: TitleBlockRow[];
 }
 
 const BORDER = {
@@ -413,34 +425,41 @@ function buildTable(gtpTable: GTPTable, printableWidth: number): Table {
   });
 }
 
-function createHeaderTable(data: GTPDocumentData): Table {
-  const makeRow = (label: string, value: string): TableRow =>
-    new TableRow({
-      children: [
-        new TableCell({
-          children: [buildParagraph(label, { bold: true })],
-          borders: { top: BORDER, bottom: BORDER, left: BORDER, right: BORDER },
-          margins: CELL_MARGINS,
-          width: { size: 18, type: WidthType.PERCENTAGE },
-          shading: { type: "clear", fill: "F2F2F2" },
-        }),
-        new TableCell({
-          children: [buildParagraph(value)],
-          borders: { top: BORDER, bottom: BORDER, left: BORDER, right: BORDER },
-          margins: CELL_MARGINS,
-        }),
-      ],
-    });
+function createTitleBlockRow(label: string, value: string): TableRow {
+  return new TableRow({
+    children: [
+      new TableCell({
+        children: [buildParagraph(label, { bold: true })],
+        borders: { top: BORDER, bottom: BORDER, left: BORDER, right: BORDER },
+        margins: CELL_MARGINS,
+        width: { size: 18, type: WidthType.PERCENTAGE },
+        shading: { type: "clear", fill: "F2F2F2" },
+      }),
+      new TableCell({
+        children: [buildParagraph(value)],
+        borders: { top: BORDER, bottom: BORDER, left: BORDER, right: BORDER },
+        margins: CELL_MARGINS,
+      }),
+    ],
+  });
+}
 
+function createStandardHeaderTable(data: GTPDocumentData): Table {
   return new Table({
     rows: [
-      makeRow("OWNER", data.owner),
-      makeRow("PROJECT", data.project),
-      makeRow("CONTRACTOR", data.contractor),
-      makeRow("LOI NO.", data.loiNo),
+      createTitleBlockRow("OWNER", data.owner),
+      createTitleBlockRow("PROJECT", data.project),
+      createTitleBlockRow("CONTRACTOR", data.contractor),
+      createTitleBlockRow("LOI NO.", data.loiNo),
     ],
     width: { size: 100, type: WidthType.PERCENTAGE },
   });
+}
+
+function buildCustomTitleBlockRows(rows: TitleBlockRow[]): TableRow[] {
+  return rows
+    .filter((r) => r.label.trim() !== "")
+    .map((r) => createTitleBlockRow(r.label, r.value ?? ""));
 }
 
 export async function renderDocx(
@@ -550,8 +569,18 @@ export async function renderDocx(
       spacing: { before: 120, after: 0 },
     }),
   ];
-  if (options.showTitleBlock !== false) {
-    headerChildren.push(createHeaderTable(data));
+
+  const titleBlockMode = options.titleBlockMode ?? "standard";
+  if (titleBlockMode === "custom") {
+    const customRows = buildCustomTitleBlockRows(options.titleBlockCustomRows ?? []);
+    if (customRows.length > 0) {
+      headerChildren.push(new Table({
+        rows: customRows,
+        width: { size: 100, type: WidthType.PERCENTAGE },
+      }));
+    }
+  } else if (titleBlockMode !== "none") {
+    headerChildren.push(createStandardHeaderTable(data));
   }
 
   const header = new Header({

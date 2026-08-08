@@ -17,7 +17,9 @@ export interface DocketRecord {
   project: string;
   enquiryTenderNo: string;
   generationVersion: number;
-  excelFiles: Array<{ name: string; url: string }>;
+  excelFiles: Array<{ id: string; name: string; url: string }>;
+  titleBlockMode: "standard" | "custom" | "none";
+  titleBlockCustomRows: Array<{ label: string; value: string }>;
   docxStatus: "download" | "generating" | "not_generated";
   docxGeneratedAt?: string;
   docxProgress?: number;
