@@ -10,6 +10,23 @@ export type GTPAlignment =
   | "justify"
   | "distributed";
 
+export type GTPVerticalAlign = "top" | "middle" | "bottom";
+
+/** One side of a cell border, carried over from the source sheet. */
+export interface GTPBorderSide {
+  /** Excel border style name, e.g. "thin", "medium", "double". */
+  style: string;
+  /** Border color as a hex string like "000000" (no leading #). */
+  color?: string;
+}
+
+export interface GTPCellBorders {
+  top?: GTPBorderSide;
+  left?: GTPBorderSide;
+  bottom?: GTPBorderSide;
+  right?: GTPBorderSide;
+}
+
 /** A single table cell, with merge info and formatting carried over from the source Excel sheet. */
 export interface GTPCell {
   text: string;
@@ -29,12 +46,20 @@ export interface GTPCell {
   fill?: string;
   /** Horizontal alignment of the cell text. */
   alignment?: GTPAlignment;
+  /** Vertical alignment of the cell text. */
+  verticalAlign?: GTPVerticalAlign;
+  /** Left indent in Excel indent levels (1 level ≈ 3 spaces). */
+  indent?: number;
   /** Whether the cell text wraps across lines. */
   wrapText?: boolean;
+  /** Per-side borders as present in the source sheet. */
+  borders?: GTPCellBorders;
 }
 
 export interface GTPRow {
   cells: GTPCell[];
+  /** Row height in points, as in the source sheet. */
+  height?: number;
 }
 
 /** One full table — corresponds 1:1 to one Excel sheet, and one page in the docx. */

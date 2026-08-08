@@ -1,5 +1,7 @@
 import ExcelJS from "exceljs";
-import { GTPTable, GTPRow, GTPCell, GTPAlignment } from "@/types/gtp-types";
+import {
+  GTPTable, GTPRow, GTPCell, GTPAlignment, GTPVerticalAlign, GTPCellBorders,
+} from "@/types/gtp-types";
 
 /**
  * Parses every sheet in one Excel workbook into one GTPTable per sheet.
@@ -59,7 +61,7 @@ export async function parseWorkbookToGTPTables(filePath: string): Promise<GTPTab
 
         const cell = row.getCell(colNumber);
         const merge = mergeInfo.get(key);
-        const text = sanitizeXml(cellValueToString(cell.value));
+        const text = sanitizeXml(cellValueToString(cell));
         const fmt = extractFormatting(cell);
 
         cells.push({
@@ -72,14 +74,15 @@ export async function parseWorkbookToGTPTables(filePath: string): Promise<GTPTab
           ...(fmt.color ? { color: fmt.color } : {}),
           ...(fmt.fill ? { fill: fmt.fill } : {}),
           ...(fmt.alignment ? { alignment: fmt.alignment } : {}),
+          ...(fmt.verticalAlign ? { verticalAlign: fmt.verticalAlign } : {}),
+          ...(fmt.indent ? { indent: fmt.indent } : {}),
           ...(fmt.wrapText ? { wrapText: true } : {}),
+          ...(Object.keys(fmt.borders).length > 0 ? { borders: fmt.borders } : {}),
         });
       }
 
-      // Skip fully blank rows (e.g. spacer rows some sheets have).
-      if (cells.some((c) => c.text.trim() !== "")) {
-        rows.push({ cells });
-      }
+      // Preserve every row exactly as in the sheet, including blank spacer rows.
+      rows.push({ cells, ...(row.height && row.height > 0 ? { height: row.height } : {}) });
     });
 
     // Skip metadata-only sheets (e.g. a sheet that just holds "UTILITY:" /
@@ -130,7 +133,10 @@ interface CellFormatting {
   color?: string;
   fill?: string;
   alignment?: GTPAlignment;
+  verticalAlign?: GTPVerticalAlign;
+  indent?: number;
   wrapText?: boolean;
+  borders: GTPCellBorders;
 }
 
 function extractFormatting(cell: ExcelJS.Cell): CellFormatting {
@@ -164,6 +170,8 @@ function extractFormatting(cell: ExcelJS.Cell): CellFormatting {
   }
 
   let alignment: GTPAlignment | undefined;
+  let verticalAlign: GTPVerticalAlign | undefined;
+  let indent: number | undefined;
   let wrapText = false;
   const cellAlignment = cell.alignment;
   if (cellAlignment) {
@@ -172,9 +180,35 @@ function extractFormatting(cell: ExcelJS.Cell): CellFormatting {
     if (h === "left" || h === "center" || h === "right" || h === "justify" || h === "distributed") {
       alignment = h;
     }
+    const v = cellAlignment.vertical;
+    if (v === "top") verticalAlign = "top";
+    else if (v === "bottom") verticalAlign = "bottom";
+    else if (v) verticalAlign = "middle"; // middle / justify / distributed
+    if (typeof cellAlignment.indent === "number" && cellAlignment.indent > 0) {
+      indent = cellAlignment.indent;
+    }
   }
 
-  return { bold, fontSize, fontName, color, fill, alignment, wrapText };
+  const borders: GTPCellBorders = {};
+  const cellBorder = cell.border as {
+    top?: { style?: string; color?: { argb?: string } };
+    left?: { style?: string; color?: { argb?: string } };
+    bottom?: { style?: string; color?: { argb?: string } };
+    right?: { style?: string; color?: { argb?: string } };
+  } | undefined;
+  if (cellBorder) {
+    for (const side of ["top", "left", "bottom", "right"] as const) {
+      const b = cellBorder[side];
+      if (b && b.style) {
+        borders[side] = {
+          style: b.style,
+          ...(b.color?.argb ? { color: normalizeColor(b.color.argb) } : {}),
+        };
+      }
+    }
+  }
+
+  return { bold, fontSize, fontName, color, fill, alignment, verticalAlign, indent, wrapText, borders };
 }
 
 /** Accepts "FFAABBCC" or "AABBCC"; strips the alpha prefix when 8 hex chars. */
@@ -188,15 +222,116 @@ function sanitizeXml(s: string): string {
   return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/g, "");
 }
 
-function cellValueToString(value: ExcelJS.CellValue): string {
+/**
+ * Returns a cell's display text as shown in Excel, honoring its number/date
+ * format (`cell.numFmt`). exceljs's `cell.text` does not apply number formats,
+ * so numbers and dates are formatted here for the common GTP patterns.
+ */
+function cellValueToString(cell: ExcelJS.Cell): string {
+  const value = cell.value;
   if (value === null || value === undefined) return "";
-  if (typeof value === "object") {
-    // Rich text / hyperlink / formula result objects
-    if ("richText" in value && Array.isArray((value as any).richText)) {
-      return (value as any).richText.map((rt: any) => rt.text).join("");
-    }
-    if ("text" in value) return String((value as any).text);
-    if ("result" in value) return String((value as any).result);
+
+  // Unwrap cached formula results so their numFmt applies to the result.
+  let resolved: unknown = value;
+  if (
+    typeof value === "object" &&
+    "result" in value &&
+    !("richText" in value) &&
+    !("text" in value)
+  ) {
+    resolved = (value as { result: unknown }).result;
   }
-  return String(value).trim();
+
+  const numFmt = cell.numFmt && cell.numFmt !== "General" ? cell.numFmt : undefined;
+
+  if (typeof resolved === "number") {
+    return numFmt ? formatNumber(resolved, numFmt) : String(resolved);
+  }
+  if (resolved instanceof Date) {
+    return numFmt ? formatDate(resolved, numFmt) : resolved.toDateString();
+  }
+  if (typeof resolved === "boolean") return resolved ? "TRUE" : "FALSE";
+  if (typeof resolved === "string") return resolved.trim();
+  if (typeof resolved === "object" && resolved !== null) {
+    if ("richText" in resolved && Array.isArray((resolved as any).richText)) {
+      return (resolved as any).richText.map((rt: any) => rt.text).join("");
+    }
+    if ("text" in resolved) return String((resolved as any).text);
+    if ("result" in resolved) return String((resolved as any).result);
+  }
+  return String(resolved).trim();
+}
+
+/** Formats a numeric cell value for common Excel number formats. */
+function formatNumber(value: number, numFmt: string): string {
+  const section = numFmt.split(";")[0].replace(/\[[^\]]*\]/g, "").replace(/\*/g, "");
+  const literals: string[] = [];
+  const withPlaceholders = section.replace(/"([^"]+)"/g, (_m: string, lit: string) => {
+    literals.push(lit);
+    return "\u0001";
+  });
+
+  const match = withPlaceholders.match(/^([^#0]*)([#0][#,0]*\.?[#0]*)(.*)$/);
+  if (!match) return String(value);
+
+  const prefix = match[1];
+  const numPart = match[2];
+  const suffix = match[3];
+  const isPercent = /%/.test(suffix);
+  const hasThousands = numPart.includes(",");
+  const dotIdx = numPart.indexOf(".");
+  const decimals = dotIdx >= 0 ? numPart.length - dotIdx - 1 : 0;
+  const stripTrailingZeros = dotIdx >= 0 && numPart.slice(dotIdx).includes("#");
+
+  let n = isPercent ? value * 100 : value;
+  let s = n.toFixed(decimals);
+  if (stripTrailingZeros && decimals > 0) {
+    s = s.replace(/\.?0+$/, "");
+  }
+  if (hasThousands) {
+    const neg = s.startsWith("-");
+    const abs = neg ? s.slice(1) : s;
+    const [int, dec] = abs.split(".");
+    s = (neg ? "-" : "") +
+      int.replace(/\B(?=(\d{3})+(?!\d))/g, ",") +
+      (dec !== undefined ? "." + dec : "");
+  }
+
+  let out = prefix + s + suffix;
+  for (const literal of literals) {
+    out = out.replace("\u0001", literal);
+  }
+  return out;
+}
+
+const MONTHS_FULL = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+const DAYS_FULL = [
+  "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+];
+
+/** Formats a date cell value for common Excel date/time formats. */
+function formatDate(value: Date, numFmt: string): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const hasHour = /h/i.test(numFmt);
+  const out = numFmt
+    .replace(/yyyy/g, () => String(value.getFullYear()))
+    .replace(/yy/g, () => pad(value.getFullYear() % 100))
+    .replace(/dddd/g, () => DAYS_FULL[value.getDay()])
+    .replace(/ddd/g, () => DAYS_FULL[value.getDay()].slice(0, 3))
+    .replace(/dd/g, () => pad(value.getDate()))
+    .replace(/d/g, () => String(value.getDate()))
+    .replace(/mmmm/g, () => MONTHS_FULL[value.getMonth()])
+    .replace(/mmm/g, () => MONTHS_FULL[value.getMonth()].slice(0, 3))
+    .replace(/mm/g, () => (hasHour ? pad(value.getMinutes()) : pad(value.getMonth() + 1)))
+    .replace(/m/g, () => (hasHour ? String(value.getMinutes()) : String(value.getMonth() + 1)))
+    .replace(/hh/g, () => pad(value.getHours()))
+    .replace(/h/g, () => String(value.getHours()))
+    .replace(/ss/g, () => pad(value.getSeconds()))
+    .replace(/s/g, () => String(value.getSeconds()))
+    .replace(/AM\/PM/g, () => (value.getHours() < 12 ? "AM" : "PM"))
+    .replace(/A\/P/g, () => (value.getHours() < 12 ? "A" : "P"));
+  return out;
 }

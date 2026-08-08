@@ -1,9 +1,11 @@
 import {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   WidthType, BorderStyle, PageBreak, Header, Footer, ImageRun,
-  TableLayoutType, convertInchesToTwip, SimpleField, VerticalAlign,
+  TableLayoutType, convertInchesToTwip, SimpleField, VerticalAlign, HeightRule,
 } from "docx";
-import type { GTPDocumentData, GTPTable, GTPRow, GTPCell } from "@/types/gtp-types";
+import type {
+  GTPDocumentData, GTPTable, GTPRow, GTPCell, GTPCellBorders, GTPBorderSide,
+} from "@/types/gtp-types";
 import { applyLetterheadFooter } from "./apply-letterhead-footer";
 import fs from "fs";
 import path from "path";
@@ -26,7 +28,51 @@ const BORDER = {
   color: "000000",
 };
 
+/** Explicit "no line" border used on sides the source cell has no border for. */
+const NO_BORDER = { style: BorderStyle.NIL };
+
+/** Cell margins for the GTP tables, mirroring Excel's small ~2px cell padding. */
+const TABLE_CELL_MARGINS = { top: 0, bottom: 0, left: 20, right: 20 };
+
+/** Cell margins for the header title block. */
 const CELL_MARGINS = { top: 40, bottom: 40, left: 80, right: 80 };
+
+type DocxBorderStyle = (typeof BorderStyle)[keyof typeof BorderStyle];
+
+/** Maps an Excel border style name to a Word border style + weight (1/8 pt). */
+const BORDER_STYLE_MAP: Record<string, { style: DocxBorderStyle; size: number }> = {
+  hair: { style: BorderStyle.SINGLE, size: 1 },
+  dotted: { style: BorderStyle.DOTTED, size: 1 },
+  dashed: { style: BorderStyle.DASHED, size: 3 },
+  thin: { style: BorderStyle.SINGLE, size: 2 },
+  dashDot: { style: BorderStyle.DOT_DASH, size: 2 },
+  dashDotDot: { style: BorderStyle.DOT_DOT_DASH, size: 2 },
+  medium: { style: BorderStyle.SINGLE, size: 4 },
+  mediumDashed: { style: BorderStyle.DASHED, size: 4 },
+  mediumDashDot: { style: BorderStyle.DOT_DASH, size: 4 },
+  mediumDashDotDot: { style: BorderStyle.DOT_DOT_DASH, size: 4 },
+  slantDashDot: { style: BorderStyle.DOT_DASH, size: 4 },
+  thick: { style: BorderStyle.THICK, size: 6 },
+  double: { style: BorderStyle.DOUBLE, size: 2 },
+};
+
+type DocxBorderDef = { style: DocxBorderStyle; size: number; color: string };
+
+function toDocxBorder(border?: GTPBorderSide): DocxBorderDef | undefined {
+  if (!border?.style) return undefined;
+  const mapped = BORDER_STYLE_MAP[border.style] ?? { style: BorderStyle.SINGLE, size: 2 };
+  return { style: mapped.style, size: mapped.size, color: border.color ?? "000000" };
+}
+
+/** Builds the per-side border set for a cell, mirroring the source sheet exactly. */
+function buildCellBorders(cell?: GTPCell): { top: DocxBorderDef | typeof NO_BORDER; bottom: DocxBorderDef | typeof NO_BORDER; left: DocxBorderDef | typeof NO_BORDER; right: DocxBorderDef | typeof NO_BORDER } {
+  return {
+    top: toDocxBorder(cell?.borders?.top) ?? NO_BORDER,
+    bottom: toDocxBorder(cell?.borders?.bottom) ?? NO_BORDER,
+    left: toDocxBorder(cell?.borders?.left) ?? NO_BORDER,
+    right: toDocxBorder(cell?.borders?.right) ?? NO_BORDER,
+  };
+}
 
 const FONT_SIZE = 18; // 9pt in half-points
 
@@ -44,6 +90,8 @@ interface RowspanEntry {
   startCol: number;
   colSpan: number;
   remaining: number;
+  /** Side borders of the merged cell, mirrored on continuation rows. */
+  borders?: GTPCellBorders;
 }
 
 interface DeferredRowspan {
@@ -81,6 +129,7 @@ function buildParagraph(
     fontSize?: number; // half-points
     color?: string;
     font?: string;
+    indent?: number; // twips
   }
 ): Paragraph {
   return new Paragraph({
@@ -94,6 +143,7 @@ function buildParagraph(
       }),
     ],
     alignment: options?.alignment,
+    indent: options?.indent ? { left: options.indent } : undefined,
     spacing: { before: 0, after: 0 },
   });
 }
@@ -123,68 +173,29 @@ function getTableColumnCount(gtpTable: GTPTable): number {
  * content-aware minimum so header text / section labels don't get crushed.
  * The final widths are normalized to fill the printable page width exactly.
  */
+/**
+ * Column widths in twips, converted from the source sheet's real character
+ * widths (≈ 105 twips per character unit + 75 twips padding). No content-based
+ * minimums or stretching: the table keeps the sheet's true proportions and only
+ * shrinks proportionally if the total is wider than the printable page.
+ */
 function calculateColumnWidthsInTwips(gtpTable: GTPTable, printableWidth: number): number[] {
   const colCount = getTableColumnCount(gtpTable);
   if (colCount === 0) return [];
 
-  const headerRowCount = computeHeaderRowCount(gtpTable);
-
-  // Base: proportional to the source sheet's real column widths.
-  let base: number[];
+  let widths: number[];
   if (Array.isArray(gtpTable.columnWidths) && gtpTable.columnWidths.length >= colCount) {
-    const ws = gtpTable.columnWidths.slice(0, colCount);
-    const tot = ws.reduce((s, w) => s + (w > 0 ? w : 0), 0);
-    base = ws.map((w) => Math.round(((w > 0 ? w : 1) / tot) * printableWidth));
+    widths = gtpTable.columnWidths.slice(0, colCount).map((w) =>
+      Math.round((w > 0 ? w : 10) * 105 + 75)
+    );
   } else {
-    base = new Array(colCount).fill(Math.round(printableWidth / colCount));
+    widths = new Array(colCount).fill(Math.round(printableWidth / colCount));
   }
 
-  // Content minimum from the header block + first data row (holds the
-  // vertically-merged section labels like "4. GENERAL TECHNICAL REQUIREMENTS").
-  const content = new Array(colCount).fill(0);
-  const scan = gtpTable.rows.slice(0, Math.min(gtpTable.rows.length, headerRowCount + 1));
-  for (const row of scan) {
-    let ci = 0;
-    for (const cell of row.cells) {
-      const span = cell.colspan || 1;
-      const len = cell.text ? cell.text.length : 0;
-      if (len > 0) {
-        if (span === 1) {
-          content[ci] = Math.max(content[ci], len);
-        } else {
-          const per = Math.ceil(len / span);
-          for (let i = 0; i < span && ci + i < colCount; i++) {
-            content[ci + i] = Math.max(content[ci + i], per);
-          }
-        }
-      }
-      ci += span;
-    }
-  }
-
-  const CHAR_TWIP = 60; // approx twips per average char at 9pt
-  const MIN_COL = 300; // floor so header text like "Sl. No." stays readable
-  const CONTENT_CAP = 1400; // max extra width a single cell can demand
-
-  let widths = base.map((b, i) => Math.max(b, Math.min(content[i] * CHAR_TWIP, CONTENT_CAP)));
-  widths = widths.map((w) => Math.max(MIN_COL, w));
-
-  // Normalize the total to exactly the printable width.
-  let total = widths.reduce((a, b) => a + b, 0);
+  const total = widths.reduce((a, b) => a + b, 0);
   if (total > printableWidth) {
-    const overage = total - printableWidth;
-    const heavyIdx = widths.map((w, i) => (w > MIN_COL ? i : -1)).filter((i) => i >= 0);
-    const heavyTotal = heavyIdx.reduce((a, i) => a + widths[i], 0);
-    if (heavyTotal > 0 && heavyTotal > overage) {
-      const factor = (heavyTotal - overage) / heavyTotal;
-      for (const i of heavyIdx) widths[i] = Math.round(widths[i] * factor);
-    }
-  }
-  total = widths.reduce((a, b) => a + b, 0);
-  const diff = printableWidth - total;
-  if (diff !== 0) {
-    const maxIdx = widths.indexOf(Math.max(...widths));
-    widths[maxIdx] = Math.max(MIN_COL, widths[maxIdx] + diff);
+    const factor = printableWidth / total;
+    widths = widths.map((w) => Math.max(1, Math.round(w * factor)));
   }
 
   return widths;
@@ -213,36 +224,46 @@ function buildCell(
         alignment: cellAlignment(gtpCell, span),
         color: gtpCell.color,
         font: gtpCell.fontName,
+        indent: gtpCell.indent ? Math.round(gtpCell.indent * 180) : undefined,
       }),
     ],
     columnSpan: span > 1 ? span : undefined,
     verticalMerge: options?.verticalMerge,
+    verticalAlign:
+      gtpCell.verticalAlign === "middle" ? VerticalAlign.CENTER
+        : gtpCell.verticalAlign === "bottom" ? VerticalAlign.BOTTOM
+          : gtpCell.verticalAlign === "top" ? VerticalAlign.TOP
+            : undefined,
     shading: gtpCell.fill ? { type: "clear", fill: gtpCell.fill } : undefined,
-    borders: {
-      top: BORDER,
-      bottom: BORDER,
-      left: BORDER,
-      right: BORDER,
-    },
-    margins: CELL_MARGINS,
+    borders: buildCellBorders(gtpCell),
+    margins: TABLE_CELL_MARGINS,
     width: options?.widthTwip
       ? { size: options.widthTwip, type: WidthType.DXA }
       : undefined,
   });
 }
 
-function buildContinuationCell(colSpan: number, widthTwip?: number): TableCell {
+/**
+ * Continuation cell of a vertical merge. Mirrors only the merged cell's
+ * left/right borders (and bottom on the last continuation row) so the merged
+ * region looks continuous like Excel, with no internal horizontal lines.
+ */
+function buildContinuationCell(
+  colSpan: number,
+  widthTwip: number | undefined,
+  borders?: { left?: GTPBorderSide; right?: GTPBorderSide; bottom?: GTPBorderSide }
+): TableCell {
   return new TableCell({
     children: [buildParagraph("")],
     columnSpan: colSpan > 1 ? colSpan : undefined,
     verticalMerge: "continue",
     borders: {
-      top: BORDER,
-      bottom: BORDER,
-      left: BORDER,
-      right: BORDER,
+      top: NO_BORDER,
+      left: toDocxBorder(borders?.left) ?? NO_BORDER,
+      bottom: toDocxBorder(borders?.bottom) ?? NO_BORDER,
+      right: toDocxBorder(borders?.right) ?? NO_BORDER,
     },
-    margins: CELL_MARGINS,
+    margins: TABLE_CELL_MARGINS,
     width: widthTwip
       ? { size: widthTwip, type: WidthType.DXA }
       : undefined,
@@ -277,7 +298,18 @@ function buildRows(gtpTable: GTPTable, colWidths: number[]): TableRow[] {
       );
 
       if (entry) {
-        cells.push(buildContinuationCell(entry.colSpan, sumWidth(colIdx, entry.colSpan)));
+        const isLastContinuation = entry.remaining === 1;
+        cells.push(
+          buildContinuationCell(
+            entry.colSpan,
+            sumWidth(colIdx, entry.colSpan),
+            {
+              left: entry.borders?.left,
+              right: entry.borders?.right,
+              bottom: isLastContinuation ? entry.borders?.bottom : undefined,
+            }
+          )
+        );
         colIdx += entry.colSpan;
         entry.remaining--;
         continue;
@@ -291,7 +323,12 @@ function buildRows(gtpTable: GTPTable, colWidths: number[]): TableRow[] {
         cells.push(
           buildCell(d.cell, { verticalMerge: "restart", widthTwip: sumWidth(colIdx, d.colSpan) })
         );
-        active.push({ startCol: d.startCol, colSpan: d.colSpan, remaining: d.remaining - 1 });
+        active.push({
+          startCol: d.startCol,
+          colSpan: d.colSpan,
+          remaining: d.remaining - 1,
+          borders: d.cell.borders,
+        });
         colIdx += d.colSpan;
         continue;
       }
@@ -314,7 +351,12 @@ function buildRows(gtpTable: GTPTable, colWidths: number[]): TableRow[] {
               buildCell({ ...gtpCell, text: "", rowspan: undefined }, { widthTwip: sumWidth(colIdx, cellSpan) })
             );
           } else {
-            active.push({ startCol: colIdx, colSpan: cellSpan, remaining: gtpCell.rowspan - 1 });
+            active.push({
+              startCol: colIdx,
+              colSpan: cellSpan,
+              remaining: gtpCell.rowspan - 1,
+              borders: gtpCell.borders,
+            });
             cells.push(
               buildCell(gtpCell, { verticalMerge: "restart", widthTwip: sumWidth(colIdx, cellSpan) })
             );
@@ -347,6 +389,9 @@ function buildRows(gtpTable: GTPTable, colWidths: number[]): TableRow[] {
       new TableRow({
         children: cells,
         tableHeader: isHeaderRow ? true : undefined,
+        ...(gtpRow.height && gtpRow.height > 0
+          ? { height: { value: Math.round(gtpRow.height * 20), rule: HeightRule.ATLEAST } }
+          : {}),
       })
     );
   }
@@ -356,9 +401,13 @@ function buildRows(gtpTable: GTPTable, colWidths: number[]): TableRow[] {
 
 function buildTable(gtpTable: GTPTable, printableWidth: number): Table {
   const colWidths = calculateColumnWidthsInTwips(gtpTable, printableWidth);
+  const totalWidth = colWidths.reduce((a, b) => a + b, 0);
   return new Table({
     rows: buildRows(gtpTable, colWidths),
-    width: { size: 100, type: WidthType.PERCENTAGE },
+    width:
+      totalWidth > 0
+        ? { size: totalWidth, type: WidthType.DXA }
+        : { size: 100, type: WidthType.PERCENTAGE },
     layout: TableLayoutType.FIXED,
     columnWidths: colWidths,
   });
