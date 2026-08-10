@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseWorkbooksToGTPTables } from "@/lib/excel-to-gtp";
+import { splitGtpTablesBySize } from "@/lib/split-gtp-tables";
 import { generateGTPDocx } from "@/lib/generate-gtp-docx";
+import { generateGtpPdf } from "@/lib/generate-gtp-pdf";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -13,15 +15,17 @@ function extractFileId(driveUrl: string): string | null {
 
 export async function POST(request: Request) {
   const body = await request.json();
-  const { recordId, orientation } = body as {
+  const { recordId, orientation, format } = body as {
     recordId?: string;
     orientation?: "portrait" | "landscape";
+    format?: "docx" | "pdf";
   };
 
   if (!recordId) {
     return NextResponse.json({ error: "Missing recordId" }, { status: 400 });
   }
 
+  const outputFormat = format === "pdf" ? "pdf" : "docx";
   const pageOrientation = orientation === "landscape" ? "landscape" : "portrait";
 
   const record = await prisma.docketRecord.findUnique({
@@ -88,7 +92,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const tables = await parseWorkbooksToGTPTables(filePaths);
+    const tables = splitGtpTablesBySize(await parseWorkbooksToGTPTables(filePaths));
 
     const data = {
       owner: record.utility || "",
@@ -97,6 +101,25 @@ export async function POST(request: Request) {
       loiNo: record.loiNo || "",
       tables,
     };
+
+    if (outputFormat === "pdf") {
+      const pdfOutputPath = path.join(tmpDir, "output.pdf");
+      const pdfBuffer = await generateGtpPdf(data, {
+        outputPath: pdfOutputPath,
+        orientation: pageOrientation,
+        titleBlockMode,
+        titleBlockCustomRows,
+      });
+
+      const filename = `${record.docketNumber || "GTP"}_v${version}.pdf`;
+      return new NextResponse(new Uint8Array(pdfBuffer), {
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `attachment; filename="${filename}"`,
+          "X-Generation-Version": String(version),
+        },
+      });
+    }
 
     const outputPath = path.join(tmpDir, "output.docx");
     const docxBuffer = await generateGTPDocx(data, {

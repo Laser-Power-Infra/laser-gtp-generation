@@ -1,6 +1,6 @@
 import {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
-  WidthType, BorderStyle, PageBreak, Header, Footer, ImageRun,
+  WidthType, BorderStyle, Header, Footer, ImageRun,
   TableLayoutType, convertInchesToTwip, SimpleField, VerticalAlign, HeightRule,
 } from "docx";
 import type {
@@ -88,6 +88,15 @@ function buildCellBorders(cell?: GTPCell): { top: DocxBorderDef | typeof NO_BORD
 
 const FONT_SIZE = 18; // 9pt in half-points
 
+/**
+ * Cap for a row's declared height (twips). The source sheets sometimes carry
+ * very large explicit row heights (up to ~400pt) which force each such row to
+ * occupy most of a page and fragment the layout into near-blank pages. Rows use
+ * HeightRule.ATLEAST, so content that is actually taller still grows beyond the
+ * cap; this only removes the oversized forced minimums.
+ */
+const MAX_ROW_HEIGHT_TWIPS = 800; // 40pt
+
 const PAGE_SIZE = { width: 11906, height: 16838 }; // A4 portrait twips
 
 const PAGE_MARGIN = {
@@ -156,13 +165,6 @@ function buildParagraph(
     ],
     alignment: options?.alignment,
     indent: options?.indent ? { left: options.indent } : undefined,
-    spacing: { before: 0, after: 0 },
-  });
-}
-
-function buildPageBreak(): Paragraph {
-  return new Paragraph({
-    children: [new PageBreak()],
     spacing: { before: 0, after: 0 },
   });
 }
@@ -402,7 +404,12 @@ function buildRows(gtpTable: GTPTable, colWidths: number[]): TableRow[] {
         children: cells,
         tableHeader: isHeaderRow ? true : undefined,
         ...(gtpRow.height && gtpRow.height > 0
-          ? { height: { value: Math.round(gtpRow.height * 20), rule: HeightRule.ATLEAST } }
+          ? {
+              height: {
+                value: Math.min(Math.round(gtpRow.height * 20), MAX_ROW_HEIGHT_TWIPS),
+                rule: HeightRule.ATLEAST,
+              },
+            }
           : {}),
       })
     );
@@ -482,7 +489,16 @@ export async function renderDocx(
 
   for (let i = 0; i < data.tables.length; i++) {
     if (i > 0) {
-      children.push(buildPageBreak());
+      // Start each table on a fresh page. A `pageBreakBefore` paragraph avoids
+      // the blank page a standalone PageBreak paragraph creates when the
+      // previous table ends exactly at the bottom of a page.
+      children.push(
+        new Paragraph({
+          pageBreakBefore: true,
+          spacing: { before: 0, after: 0 },
+          children: [new TextRun({ text: "", size: 2 })],
+        })
+      );
     }
 
     children.push(buildTable(data.tables[i], printableWidth));
@@ -581,6 +597,14 @@ export async function renderDocx(
     }
   } else if (titleBlockMode !== "none") {
     headerChildren.push(createStandardHeaderTable(data));
+  }
+
+  if (titleBlockMode !== "none") {
+    headerChildren.push(
+      new Paragraph({
+        spacing: { before: 300, after: 0 },
+      })
+    );
   }
 
   const header = new Header({

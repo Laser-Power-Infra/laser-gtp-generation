@@ -1,49 +1,55 @@
-<html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: Calibri, Arial, sans-serif; color: #000; }
+  .page-border {
+    position: fixed;
+    inset: 0;
+    border: 1.5px solid #FF0000;
+    pointer-events: none;
+    z-index: 1000;
+  }
+  .gtp-page { width: {{contentWidthPx}}px; margin: 0 auto; }
+  table.gtp-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  table.gtp-table td { word-wrap: break-word; overflow-wrap: break-word; }
+  tr { page-break-inside: avoid; }
+  .page-break { page-break-before: always; }
+</style>
+</head>
 <body>
-
-  <p style="text-align:center; font-weight:bold; font-size:16pt; margin:0 0 2px 0;">LASER POWER AND INFRA LIMITED</p>
-  <p style="text-align:center; font-size:10pt; margin:0 0 14px 0;">Kolkata, West Bengal India; info@laserpowerinfra.com</p>
-
-  <table style="width:100%; border-collapse:collapse;">
-    <tr>
-      <td style="border:1px solid black; padding:5px 8px; font-weight:bold; width:18%; background-color:#f2f2f2;">OWNER</td>
-      <td style="border:1px solid black; padding:5px 8px;">{{owner}}</td>
-    </tr>
-    <tr>
-      <td style="border:1px solid black; padding:5px 8px; font-weight:bold; background-color:#f2f2f2;">PROJECT</td>
-      <td style="border:1px solid black; padding:5px 8px;">{{project}}</td>
-    </tr>
-    <tr>
-      <td style="border:1px solid black; padding:5px 8px; font-weight:bold; background-color:#f2f2f2;">CONTRACTOR</td>
-      <td style="border:1px solid black; padding:5px 8px;">{{contractor}}</td>
-    </tr>
-    <tr>
-      <td style="border:1px solid black; padding:5px 8px; font-weight:bold; background-color:#f2f2f2;">LOI NO.</td>
-      <td style="border:1px solid black; padding:5px 8px;">{{loiNo}}</td>
-    </tr>
-  </table>
-
+  <div class="page-border"></div>
   {{#each tables}}
-  <div class="page-break"></div>
-
-  <p style="font-weight:bold; font-size:11pt; text-align:center; margin:0 0 6px 0;">{{this.sheetName}}</p>
-
-  <table style="width:100%; border-collapse:collapse;">
-    <tbody>
-      {{#each this.rows}}
-      <tr>
+  {{#unless @first}}<div class="page-break"></div>{{/unless}}
+  <div class="gtp-page">
+    <table class="gtp-table">
+      <thead>
+      {{#each this.headerRows}}
+        <tr{{#if this.height}} style="height:{{this.height}}pt;"{{/if}}>
         {{#each this.cells}}
-        {{#if this.bold}}
-        <td style="border:1px solid black; padding:4px 6px; font-size:9.5pt; font-weight:bold; vertical-align:top;"{{#if this.colspan}} colspan="{{this.colspan}}"{{/if}}{{#if this.rowspan}} rowspan="{{this.rowspan}}"{{/if}}>{{this.text}}</td>
-        {{else}}
-        <td style="border:1px solid black; padding:4px 6px; font-size:9.5pt; vertical-align:top;"{{#if this.colspan}} colspan="{{this.colspan}}"{{/if}}{{#if this.rowspan}} rowspan="{{this.rowspan}}"{{/if}}>{{this.text}}</td>
-        {{/if}}
+          <td{{#if this.colspan}} colspan="{{this.colspan}}"{{/if}} style="{{this.style}}">{{this.text}}</td>
         {{/each}}
-      </tr>
+        </tr>
       {{/each}}
-    </tbody>
-  </table>
+      </thead>
+      <tbody>
+      {{#each this.bodyRows}}
+        <tr{{#if this.height}} style="height:{{this.height}}pt;"{{/if}}>
+        {{#each this.cells}}
+          <td{{#if this.colspan}} colspan="{{this.colspan}}"{{/if}}{{#if this.rowspan}} rowspan="{{this.rowspan}}"{{/if}} style="{{this.style}}">{{this.text}}</td>
+        {{/each}}
+        </tr>
+      {{/each}}
+      </tbody>
+    </table>
+  </div>
   {{/each}}
-
 </body>
 </html>

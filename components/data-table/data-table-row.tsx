@@ -143,6 +143,7 @@ function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }
   const dispatch = useAppDispatch();
   const orientation = useAppSelector(selectRecordOrientation(record.id));
   const [generating, setGenerating] = useState(false);
+  const [format, setFormat] = useState<"docx" | "pdf">("docx");
   const value = String((record as unknown as Record<string, unknown>)[field] ?? "");
 
   const handleGenerate = async (e: React.MouseEvent) => {
@@ -152,7 +153,7 @@ function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recordId: record.id, orientation }),
+        body: JSON.stringify({ recordId: record.id, orientation, format }),
       });
       if (!res.ok) throw new Error(await res.text());
       const version = res.headers.get("X-Generation-Version") || "1";
@@ -160,11 +161,11 @@ function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${record.docketNumber}_v${version}.docx`;
+      a.download = `${record.docketNumber}_v${version}.${format}`;
       a.click();
       URL.revokeObjectURL(url);
       dispatch(updateRecordField({ id: record.id, field: "generationVersion", value: Number(version) }));
-      toast.success(`GTP document v${version} generated`);
+      toast.success(`GTP ${format.toUpperCase()} v${version} generated`);
     } catch (err) {
       toast.error("Generation failed", { description: err instanceof Error ? err.message : undefined });
     } finally {
@@ -176,6 +177,15 @@ function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }
     const ver = record.generationVersion;
     return (
       <div className="flex items-center gap-1.5">
+        <Select value={format} onValueChange={(value) => setFormat(value as "docx" | "pdf")}>
+          <SelectTrigger size="sm" aria-label="Select output format" className="text-xs w-[74px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="docx">DOCX</SelectItem>
+            <SelectItem value="pdf">PDF</SelectItem>
+          </SelectContent>
+        </Select>
         <button
           onClick={handleGenerate}
           disabled={generating || record.excelFiles.length === 0}

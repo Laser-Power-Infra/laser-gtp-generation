@@ -1,0 +1,25 @@
+<div style="width:{{contentWidthPx}}px; margin:0 auto; font-family:Calibri,Arial,sans-serif; color:#000; box-sizing:border-box;">
+  <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
+    <tr>
+      <td style="border:1px solid #CCCCCC; padding:6px 8px; width:72%; vertical-align:middle;">
+        <div style="font-family:Georgia, serif; font-size:16pt; font-weight:bold; color:#FFA3A3;">LASER POWER AND INFRA LIMITED</div>
+        <div style="font-size:10pt; color:#0047AB; margin-top:2px;">Kolkata, West Bengal India; info@laserpowerinfra.com</div>
+      </td>
+      <td style="border:1px solid #CCCCCC; padding:3px; width:28%; text-align:center; vertical-align:middle;">
+        <img src="{{logoBase64}}" width="160" height="64" alt="logo" />
+      </td>
+    </tr>
+  </table>
+  <div style="height:12px;"></div>
+  {{#if titleBlockRows.length}}
+  <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
+    {{#each titleBlockRows}}
+    <tr>
+      <td style="border:1px solid #000; padding:4px 8px; font-weight:bold; font-size:9pt; width:18%; background-color:#F2F2F2;">{{this.label}}</td>
+      <td style="border:1px solid #000; padding:4px 8px; font-size:9pt;">{{this.value}}</td>
+    </tr>
+    {{/each}}
+  </table>
+  {{/if}}
+  <div style="height:20px;"></div>
+</div>
