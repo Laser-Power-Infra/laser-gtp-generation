@@ -96,15 +96,104 @@ export async function parseWorkbookToGTPTables(filePath: string): Promise<GTPTab
     }
     if (rows.length < 3 || nonEmptyCells < 5) return;
 
-    tables.push({
+    tables.push(mergeSingleValueRows({
       sheetName: worksheet.name,
       sourceFile: fileName,
       rows,
       columnWidths: readColumnWidths(worksheet, colCount),
-    });
+    }));
   });
 
   return tables;
+}
+
+export function getTableColumnCount(gtpTable: GTPTable): number {
+  let max = 0;
+  for (const row of gtpTable.rows) {
+    let cols = 0;
+    for (const cell of row.cells) {
+      cols += cell.colspan || 1;
+    }
+    max = Math.max(max, cols);
+  }
+  return max;
+}
+
+export function mergeSingleValueRows(gtpTable: GTPTable): GTPTable {
+  const colCount = getTableColumnCount(gtpTable);
+  if (colCount <= 1) return gtpTable;
+
+  const newRows: GTPRow[] = gtpTable.rows.map((row) => {
+    // If any cell in this row initiates a vertical merge (rowspan > 1), leave as is
+    const hasRowspan = row.cells.some((cell) => cell.rowspan && cell.rowspan > 1);
+    if (hasRowspan) return row;
+
+    // Find indices of non-empty cells
+    const nonEmptyIndices: number[] = [];
+    for (let i = 0; i < row.cells.length; i++) {
+      if (row.cells[i].text && row.cells[i].text.trim() !== "") {
+        nonEmptyIndices.push(i);
+      }
+    }
+
+    if (nonEmptyIndices.length === 1) {
+      const targetIdx = nonEmptyIndices[0];
+      const targetCell = row.cells[targetIdx];
+
+      // Check if all cells after targetIdx are empty
+      const trailingEmpty = row.cells.slice(targetIdx + 1).every(
+        (cell) => !cell.text || cell.text.trim() === ""
+      );
+
+      if (!trailingEmpty) return row;
+
+      // Check if all cells before targetIdx are empty
+      const leadingEmpty = row.cells.slice(0, targetIdx).every(
+        (cell) => !cell.text || cell.text.trim() === ""
+      );
+
+      const totalRowSpanSum = row.cells.reduce((sum, c) => sum + (c.colspan || 1), 0);
+
+      // If leading cells are empty AND total span equals colCount (no active left vertical merge),
+      // merge ALL cells in the row into 1 full-width cell.
+      if (leadingEmpty && totalRowSpanSum === colCount) {
+        if ((targetCell.colspan || 1) >= colCount) return row;
+
+        const mergedCell: GTPCell = {
+          ...targetCell,
+          colspan: colCount,
+        };
+        return {
+          ...row,
+          cells: [mergedCell],
+        };
+      }
+
+      // Otherwise (e.g. left column is occupied by an active vertical merge like '5. GENERAL CONSTRUCTION'),
+      // merge targetCell with all trailing empty cells in this row.
+      const trailingSpanSum = row.cells
+        .slice(targetIdx)
+        .reduce((sum, c) => sum + (c.colspan || 1), 0);
+
+      if (trailingSpanSum > (targetCell.colspan || 1)) {
+        const mergedCell: GTPCell = {
+          ...targetCell,
+          colspan: trailingSpanSum,
+        };
+        return {
+          ...row,
+          cells: [...row.cells.slice(0, targetIdx), mergedCell],
+        };
+      }
+    }
+
+    return row;
+  });
+
+  return {
+    ...gtpTable,
+    rows: newRows,
+  };
 }
 
 /** Parses multiple workbooks and flattens all their sheets into one ordered list of tables. */

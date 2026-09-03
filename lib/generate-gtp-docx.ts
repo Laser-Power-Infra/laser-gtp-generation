@@ -1,4 +1,5 @@
 import { renderDocx, RenderDocxOptions } from "./render-docx";
+import { validateAndFixGTPDocx } from "./validate-docx";
 import { GTPDocumentData } from "@/types/gtp-types";
 
 export interface GenerateDocxOptions {
@@ -12,11 +13,13 @@ export async function generateGTPDocx(
   data: GTPDocumentData,
   options: GenerateDocxOptions
 ): Promise<Buffer> {
-  const buffer = await renderDocx(data, {
+  const rawBuffer = await renderDocx(data, {
     orientation: options.orientation,
     titleBlockMode: options.titleBlockMode,
     titleBlockCustomRows: options.titleBlockCustomRows,
   });
+
+  const buffer = await validateAndFixGTPDocx(rawBuffer);
 
   const fs = await import("fs");
   fs.writeFileSync(options.outputPath, buffer);

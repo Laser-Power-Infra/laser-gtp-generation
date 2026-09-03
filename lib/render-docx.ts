@@ -7,6 +7,7 @@ import type {
   GTPDocumentData, GTPTable, GTPRow, GTPCell, GTPCellBorders, GTPBorderSide,
 } from "@/types/gtp-types";
 import { applyLetterheadFooter } from "./apply-letterhead-footer";
+import { mergeSingleValueRows } from "./excel-to-gtp";
 import fs from "fs";
 import path from "path";
 
@@ -102,7 +103,7 @@ const PAGE_SIZE = { width: 11906, height: 16838 }; // A4 portrait twips
 const PAGE_MARGIN = {
   top: convertInchesToTwip(1),
   right: convertInchesToTwip(0.4),
-  bottom: 1134, // 0.79", matching the letterhead
+  bottom: convertInchesToTwip(1.75), // 2520 twips: clearance for floating signature & letterhead footer
   left: convertInchesToTwip(0.4),
   footer: 0, // sit the letterhead footer flush at the page bottom
 };
@@ -251,7 +252,7 @@ function buildCell(
     shading: gtpCell.fill ? { type: "clear", fill: gtpCell.fill } : undefined,
     borders: buildCellBorders(gtpCell),
     margins: TABLE_CELL_MARGINS,
-    width: options?.widthTwip
+    width: options?.widthTwip && span <= 1
       ? { size: options.widthTwip, type: WidthType.DXA }
       : undefined,
   });
@@ -278,7 +279,7 @@ function buildContinuationCell(
       right: toDocxBorder(borders?.right) ?? NO_BORDER,
     },
     margins: TABLE_CELL_MARGINS,
-    width: widthTwip
+    width: widthTwip && colSpan <= 1
       ? { size: widthTwip, type: WidthType.DXA }
       : undefined,
   });
@@ -418,7 +419,8 @@ function buildRows(gtpTable: GTPTable, colWidths: number[]): TableRow[] {
   return rows;
 }
 
-function buildTable(gtpTable: GTPTable, printableWidth: number): Table {
+function buildTable(rawTable: GTPTable, printableWidth: number): Table {
+  const gtpTable = mergeSingleValueRows(rawTable);
   const colWidths = calculateColumnWidthsInTwips(gtpTable, printableWidth);
   const totalWidth = colWidths.reduce((a, b) => a + b, 0);
   return new Table({
