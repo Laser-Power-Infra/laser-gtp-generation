@@ -5,7 +5,8 @@ export default clerkMiddleware(async (auth, req) => {
   const isPublicRoute =
     pathname.startsWith('/sign-in') ||
     pathname.startsWith('/sign-up') ||
-    pathname.startsWith('/api/webhooks/clerk')
+    pathname.startsWith('/api/webhooks/clerk') ||
+    pathname.startsWith('/api/health') ||
 
   if (!isPublicRoute) {
     await auth.protect()
