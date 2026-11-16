@@ -7,7 +7,7 @@ import { setRecordReview } from "@/store/slices/dataSlice";
 import SendMailDialog from "@/components/dialogs/send-mail-dialog";
 import type { DocketRecord } from "@/types";
 
-const STAGE_LABEL = { review: "In review", approved: "Approved", client: "Sent to client" } as const;
+export const STAGE_LABEL = { review: "In review", approved: "Approved", client: "Sent to client" } as const;
 const STAGE_STYLE = {
   review: "border-amber-200 bg-amber-50 text-amber-800",
   approved: "border-emerald-200 bg-emerald-50 text-emerald-800",

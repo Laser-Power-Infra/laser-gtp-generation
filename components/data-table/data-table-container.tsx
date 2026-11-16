@@ -4,30 +4,37 @@ import React, { useMemo, useState, useEffect } from "react";
 import { useAppSelector, useAppDispatch } from "@/store/hooks";
 import {
   selectAllDenormalized, selectRecordsLoading, selectRecordsLoaded,
-  fetchRecords,
+  selectRecordOrientations, fetchRecords,
 } from "@/store/slices/dataSlice";
 import { selectFilters } from "@/store/selectors/filterSelectors";
 import type { FiltersState, DocketRecord, SortState, ChildItem } from "@/types";
 import { DataTableHeader } from "./data-table-header";
 import { DataTableRow } from "./data-table-row";
+import { STAGE_LABEL } from "./review-cell";
 import { DataTablePagination } from "./data-table-pagination";
 import { DataTableToolbar } from "./data-table-toolbar";
 import { SearchX, Loader2 } from "lucide-react";
 
-export const COLUMNS = [
-  { key: "docketNumber", label: "Docket Number", filterType: "text" as const, sortable: true },
-  { key: "utility", label: "Utility", filterType: null, sortable: true },
-  { key: "partyName", label: "Party Name", filterType: "text" as const, sortable: true },
-  { key: "projectRefNo", label: "Project Ref No", filterType: "text" as const, sortable: true },
-  { key: "enquiryTenderNo", label: "Enquiry/Tender No", filterType: "text" as const, sortable: true },
-  { key: "loiNo", label: "Reference No/LOI No/PO No", filterType: "text" as const, sortable: true },
-  { key: "project", label: "Project", filterType: "text" as const, sortable: true },
-  { key: "excelFiles", label: "Excel Files", filterType: null, sortable: false },
-  { key: "orientation", label: "Orientation", filterType: null, sortable: false },
-  { key: "showTitleBlock", label: "Title Block", filterType: null, sortable: false },
-  { key: "docxStatus", label: "Generate GTP", filterType: null, sortable: true },
-  { key: "review", label: "Review", filterType: null, sortable: false },
+export const COLUMNS: Array<{
+  key: string; label: string; filterType: "text" | null; sortable: boolean; width?: number;
+}> = [
+  { key: "docketNumber", label: "Docket Number", filterType: "text" as const, sortable: true, width: 190 },
+  { key: "utility", label: "Utility", filterType: null, sortable: true, width: 170 },
+  { key: "partyName", label: "Party Name", filterType: "text" as const, sortable: true, width: 170 },
+  { key: "projectRefNo", label: "Project Ref No", filterType: "text" as const, sortable: true, width: 130 },
+  { key: "enquiryTenderNo", label: "Enquiry/Tender No", filterType: "text" as const, sortable: true, width: 140 },
+  { key: "loiNo", label: "Reference No/LOI No/PO No", filterType: "text" as const, sortable: true, width: 150 },
+  { key: "project", label: "Project", filterType: "text" as const, sortable: true, width: 140 },
+  { key: "excelFiles", label: "Excel Files", filterType: null, sortable: true, width: 180 },
+  { key: "orientation", label: "Orientation", filterType: null, sortable: true, width: 125 },
+  { key: "showTitleBlock", label: "Title Block", filterType: null, sortable: true, width: 125 },
+  // Wide enough for the format picker, "Generating..." and the version label.
+  { key: "docxStatus", label: "Generate GTP", filterType: null, sortable: true, width: 240 },
+  { key: "review", label: "Review", filterType: null, sortable: true, width: 180 },
 ];
+
+// Below this the table scrolls sideways instead of squeezing the columns.
+const TABLE_MIN_WIDTH = COLUMNS.reduce((sum, col) => sum + (col.width ?? 120), 0);
 
 export const CHILD_COLUMNS = [
   { key: "itemName", label: "Item Name" },
@@ -36,57 +43,58 @@ export const CHILD_COLUMNS = [
   { key: "dueDate", label: "Due Date" },
 ];
 
-function matchesFilters(record: DocketRecord, filters: FiltersState): boolean {
-  if (filters.docketNumber) {
-    if (!record.docketNumber.toLowerCase().includes(filters.docketNumber.toLowerCase())) return false;
+const TEXT_FILTERS = ["docketNumber", "partyName", "projectRefNo", "enquiryTenderNo", "loiNo", "project"] as const;
+const TITLE_BLOCK_LABEL = { standard: "Standard", custom: "Custom", none: "None" } as const;
+const REVIEW_ORDER = ["review", "approved", "client"];
+
+type Orientations = Record<string, "portrait" | "landscape">;
+
+/** What a column shows for a record, as text. The dropdown filters list and match these. */
+export function columnValue(record: DocketRecord, key: string, orientations: Orientations): string {
+  switch (key) {
+    case "excelFiles": return record.excelFiles.length > 0 ? "Has files" : "No files";
+    case "orientation": return orientations[record.id] === "landscape" ? "Landscape" : "Portrait";
+    case "showTitleBlock": return TITLE_BLOCK_LABEL[record.titleBlockMode ?? "standard"];
+    case "docxStatus": return record.generationVersion > 0 ? "Generated" : "Not generated";
+    case "review": return record.review ? STAGE_LABEL[record.review.stage] : "Not sent";
+    default: return String((record as unknown as Record<string, unknown>)[key] ?? "").trim();
   }
-  if (filters.utility.length > 0) {
-    if (!filters.utility.includes(record.utility)) return false;
+}
+
+export function matchesFilters(record: DocketRecord, filters: FiltersState, orientations: Orientations): boolean {
+  for (const field of TEXT_FILTERS) {
+    const wanted = filters[field].trim().toLowerCase();
+    if (wanted && !String(record[field] ?? "").toLowerCase().includes(wanted)) return false;
   }
-  if (filters.partyName) {
-    if (!record.partyName.toLowerCase().includes(filters.partyName.toLowerCase())) return false;
-  }
-  if (filters.projectRefNo) {
-    if (!record.projectRefNo.toLowerCase().includes(filters.projectRefNo.toLowerCase())) return false;
-  }
-  if (filters.loiNo) {
-    if (!record.loiNo.toLowerCase().includes(filters.loiNo.toLowerCase())) return false;
-  }
-  if (filters.project) {
-    if (!record.project.toLowerCase().includes(filters.project.toLowerCase())) return false;
-  }
-  if (filters.enquiryTenderNo) {
-    if (!record.enquiryTenderNo.toLowerCase().includes(filters.enquiryTenderNo.toLowerCase())) return false;
-  }
-  if (filters.docxStatus.length > 0) {
-    if (!filters.docxStatus.includes(record.docxStatus)) return false;
+  for (const [key, values] of Object.entries(filters.values)) {
+    if (values.length > 0 && !values.includes(columnValue(record, key, orientations))) return false;
   }
   return true;
 }
 
-function getFieldValue(record: DocketRecord, key: string): string {
-  const val = (record as unknown as Record<string, unknown>)[key];
-  if (typeof val === "string") return val;
-  if (Array.isArray(val)) return val.length > 0 ? `${val.length} files` : "No files";
-  return String(val ?? "");
+/** Counts sort as numbers (file count, version, review stage); everything else as text. */
+function sortValue(record: DocketRecord, key: string, orientations: Orientations): string | number {
+  if (key === "excelFiles") return record.excelFiles.length;
+  if (key === "docxStatus") return record.generationVersion;
+  if (key === "review") {
+    return record.review ? (REVIEW_ORDER.indexOf(record.review.stage) + 1) * 100000 + record.review.version : 0;
+  }
+  return columnValue(record, key, orientations);
 }
 
-function sortRecords(records: DocketRecord[], sort: SortState): DocketRecord[] {
+export function sortRecords<T extends DocketRecord>(records: T[], sort: SortState, orientations: Orientations): T[] {
   if (!sort.direction || !sort.field) return records;
-  const sorted = [...records].sort((a, b) => {
-    const aVal = getFieldValue(a, sort.field);
-    const bVal = getFieldValue(b, sort.field);
-    const aNum = parseFloat(aVal);
-    const bNum = parseFloat(bVal);
-    let cmp: number;
-    if (!isNaN(aNum) && !isNaN(bNum)) {
-      cmp = aNum - bNum;
-    } else {
-      cmp = aVal.localeCompare(bVal);
-    }
-    return sort.direction === "asc" ? cmp : -cmp;
-  });
-  return sorted;
+  const sign = sort.direction === "asc" ? 1 : -1;
+  return records
+    .map((record) => ({ record, value: sortValue(record, sort.field, orientations) }))
+    .sort((x, y) =>
+      sign *
+      (typeof x.value === "number" && typeof y.value === "number"
+        ? x.value - y.value
+        // numeric: "ENQ-999" sorts before "ENQ-1000"
+        : String(x.value).localeCompare(String(y.value), undefined, { numeric: true, sensitivity: "base" }))
+    )
+    .map((entry) => entry.record);
 }
 
 export function DataTableContainer() {
@@ -95,6 +103,7 @@ export function DataTableContainer() {
   const loading = useAppSelector(selectRecordsLoading);
   const loaded = useAppSelector(selectRecordsLoaded);
   const filters = useAppSelector(selectFilters);
+  const orientations = useAppSelector(selectRecordOrientations);
   const currentPage = useAppSelector((s) => s.pagination.currentPage);
   const pageSize = useAppSelector((s) => s.pagination.pageSize);
   const columnWidths = useAppSelector((s) => s.ui.columnWidths);
@@ -110,13 +119,13 @@ export function DataTableContainer() {
   }, []);
 
   const filteredRecords = useMemo(
-    () => allRecords.filter((r) => matchesFilters(r, filters)),
-    [allRecords, filters]
+    () => allRecords.filter((r) => matchesFilters(r, filters, orientations)),
+    [allRecords, filters, orientations]
   );
 
   const sortedRecords = useMemo(
-    () => sortRecords(filteredRecords, { field: sortField, direction: sortDirection }),
-    [filteredRecords, sortField, sortDirection]
+    () => sortRecords(filteredRecords, { field: sortField, direction: sortDirection }, orientations),
+    [filteredRecords, sortField, sortDirection, orientations]
   );
 
   const totalRecords = sortedRecords.length;
@@ -140,11 +149,12 @@ export function DataTableContainer() {
       <DataTableToolbar />
 
       <div className="flex-1 overflow-x-auto overflow-y-auto max-h-[70vh] w-full min-w-0">
-        <table className="w-full border-collapse text-left" style={{ tableLayout: "fixed" }}>
+        <table className="w-full border-collapse text-left" style={{ tableLayout: "fixed", minWidth: TABLE_MIN_WIDTH }}>
           <colgroup>
-            {COLUMNS.map((_, idx) => (
-              <col key={idx} style={{ width: columnWidths[idx] ? `${columnWidths[idx]}px` : undefined }} />
-            ))}
+            {COLUMNS.map((col, idx) => {
+              const width = columnWidths[idx] ?? col.width;
+              return <col key={idx} style={{ width: width ? `${width}px` : undefined }} />;
+            })}
           </colgroup>
 
           <DataTableHeader

@@ -44,14 +44,17 @@ export interface SortState {
 
 export interface FiltersState {
   docketNumber: string;
-  utility: string[];
   partyName: string;
   projectRefNo: string;
   loiNo: string;
   project: string;
   enquiryTenderNo: string;
-  docxStatus: string[];
+  /** Dropdown filters: column key -> the values ticked. No entry or an empty list means no filter. */
+  values: Record<string, string[]>;
 }
+
+/** The columns that have a free-text search box. */
+export type TextFilterField = Exclude<keyof FiltersState, "values">;
 
 export interface PaginationState {
   currentPage: number;

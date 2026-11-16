@@ -258,6 +258,7 @@ export const selectRecordsSyncing = (state: RootState) => state.data.syncing;
 export const selectChildItems = (state: RootState) => state.data.childItems;
 export const selectChildrenByParentId = (parentId: string) =>
   (state: RootState) => state.data.childItems[parentId] || [];
+export const selectRecordOrientations = (state: RootState) => state.data.recordOrientations;
 export const selectRecordOrientation = (id: string) =>
   (state: RootState) => state.data.recordOrientations[id] ?? "portrait";
 

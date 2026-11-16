@@ -9,11 +9,10 @@ export const selectHasActiveFilters = createSelector(
   [selectFiltersState],
   (filters) =>
     filters.docketNumber !== "" ||
-    filters.utility.length > 0 ||
     filters.partyName !== "" ||
     filters.projectRefNo !== "" ||
     filters.loiNo !== "" ||
     filters.project !== "" ||
     filters.enquiryTenderNo !== "" ||
-    filters.docxStatus.length > 0
+    Object.values(filters.values).some((v) => v.length > 0)
 );
