@@ -40,7 +40,8 @@ export async function POST(req: NextRequest) {
         break;
       }
       case "user.deleted": {
-        await prisma.user.delete({ where: { id } });
+        // deleteMany: a user we never synced must not fail the webhook (Clerk would retry forever).
+        await prisma.user.deleteMany({ where: { id } });
         break;
       }
     }

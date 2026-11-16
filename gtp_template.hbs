@@ -19,7 +19,8 @@
     border-collapse: collapse;
     table-layout: fixed;
   }
-  table.gtp-table td { word-wrap: break-word; overflow-wrap: break-word; }
+  /* pre-wrap keeps in-cell line breaks (Alt+Enter in Excel) */
+  table.gtp-table td { word-wrap: break-word; overflow-wrap: break-word; white-space: pre-wrap; }
   tr { page-break-inside: avoid; }
   .page-break { page-break-before: always; }
 </style>
@@ -30,11 +31,12 @@
   {{#unless @first}}<div class="page-break"></div>{{/unless}}
   <div class="gtp-page">
     <table class="gtp-table">
+      <colgroup>{{#each this.colPcts}}<col style="width:{{this}}%;" />{{/each}}</colgroup>
       <thead>
       {{#each this.headerRows}}
         <tr{{#if this.height}} style="height:{{this.height}}pt;"{{/if}}>
         {{#each this.cells}}
-          <td{{#if this.colspan}} colspan="{{this.colspan}}"{{/if}} style="{{this.style}}">{{this.text}}</td>
+          <td{{#if this.colspan}} colspan="{{this.colspan}}"{{/if}}{{#if this.rowspan}} rowspan="{{this.rowspan}}"{{/if}} style="{{this.style}}">{{this.text}}</td>
         {{/each}}
         </tr>
       {{/each}}

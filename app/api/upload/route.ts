@@ -11,6 +11,15 @@ export async function POST(request: Request) {
     if (!recordId) return NextResponse.json({ error: "Missing recordId" }, { status: 400 });
     if (files.length === 0) return NextResponse.json({ error: "No files" }, { status: 400 });
 
+    // Anything else would only fail later, at generation.
+    const unsupported = files.filter((f) => !/\.xlsx?$/i.test(f.name));
+    if (unsupported.length > 0) {
+      return NextResponse.json(
+        { error: `Only .xlsx and .xls files are supported: ${unsupported.map((f) => f.name).join(", ")}` },
+        { status: 400 }
+      );
+    }
+
     console.log("[Upload] Starting upload for record:", recordId, "files:", files.length);
 
     const results: { name: string; url: string; type: string | null; size: number }[] = [];
@@ -23,7 +32,8 @@ export async function POST(request: Request) {
       console.log("[Upload] Uploaded:", file.name, res.url);
     }
 
-    await prisma.attachment.createMany({
+    // Return the saved rows: the client needs each attachment's id to delete it.
+    const attachments = await prisma.attachment.createManyAndReturn({
       data: results.map((r) => ({
         recordId,
         name: r.name,
@@ -31,11 +41,12 @@ export async function POST(request: Request) {
         type: r.type,
         size: r.size,
       })),
+      select: { id: true, name: true, url: true },
     });
 
-    console.log("[Upload] Saved", results.length, "attachments to DB");
+    console.log("[Upload] Saved", attachments.length, "attachments to DB");
 
-    return NextResponse.json({ attachments: results });
+    return NextResponse.json({ attachments });
   } catch (error) {
     console.error("[Upload] Error:", error);
     return NextResponse.json(

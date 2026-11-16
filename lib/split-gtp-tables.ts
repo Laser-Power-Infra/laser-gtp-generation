@@ -1,6 +1,7 @@
 import type {
   GTPTable, GTPRow, GTPCell, GTPCellBorders,
 } from "@/types/gtp-types";
+import { layoutTable, type CellSlot, type RowLayout } from "./gtp-layout";
 
 /**
  * Splits GTP sheets that contain repeated cable-size groups (e.g. a main
@@ -8,7 +9,7 @@ import type {
  * into one narrow table per size. Each per-size table keeps ALL the internal
  * header rows and label columns from the source (Sl. No., Description as per
  * Specification, Requirements as per Specification, …) plus that size's value
- * column, so no internal header is lost.
+ * column(s), so no internal header is lost.
  *
  * Sheets that don't match the pattern are returned unchanged.
  */
@@ -28,24 +29,11 @@ function isHeaderKeywordCell(cell: GTPCell): boolean {
 
 interface SizeEntry {
   colIdx: number;
+  /** Number of grid columns under this size (e.g. 2 for Required / Offered). */
+  span: number;
   label: string;
-}
-
-interface CellSlot {
+  /** The size's own header cell in the source sheet. */
   cell: GTPCell;
-  startCol: number;
-  colspan: number;
-}
-
-function slots(row: GTPRow): CellSlot[] {
-  const out: CellSlot[] = [];
-  let col = 0;
-  for (const cell of row.cells) {
-    const span = cell.colspan || 1;
-    out.push({ cell, startCol: col, colspan: span });
-    col += span;
-  }
-  return out;
 }
 
 const DEFAULT_BORDER: GTPCellBorders = {
@@ -60,22 +48,29 @@ function ensureBorder(cell: GTPCell): GTPCell {
   return { ...cell, borders: DEFAULT_BORDER };
 }
 
-function makeHeaderCell(text: string, opts?: { colspan?: number }): GTPCell {
+function makeHeaderCell(text: string, opts?: { colspan?: number; like?: GTPCell }): GTPCell {
   return {
     text,
     bold: true,
+    // Same typeface as the sheet, so the generated title row doesn't stand out.
+    ...(opts?.like?.fontName ? { fontName: opts.like.fontName } : {}),
+    ...(opts?.like?.fontSize ? { fontSize: opts.like.fontSize } : {}),
     ...(opts?.colspan && opts.colspan > 1 ? { colspan: opts.colspan } : {}),
     borders: DEFAULT_BORDER,
   };
 }
 
-function findSizeRow(table: GTPTable): { sizeRowIdx: number; sizes: SizeEntry[]; labelColCount: number } | null {
+function findSizeRow(
+  table: GTPTable,
+  layout: RowLayout[]
+): { sizeRowIdx: number; sizes: SizeEntry[]; labelColCount: number } | null {
   const limit = Math.min(table.rows.length, 4);
   for (let r = 0; r < limit; r++) {
-    const row = table.rows[r];
     const sizes: SizeEntry[] = [];
-    for (const sl of slots(row)) {
-      if (isSizeCell(sl.cell)) sizes.push({ colIdx: sl.startCol, label: sl.cell.text.trim() });
+    for (const sl of layout[r].slots) {
+      if (isSizeCell(sl.cell)) {
+        sizes.push({ colIdx: sl.startCol, span: sl.colspan, label: sl.cell.text.trim(), cell: sl.cell });
+      }
     }
     if (sizes.length >= 2) {
       const labelColCount = sizes[0].colIdx;
@@ -86,13 +81,12 @@ function findSizeRow(table: GTPTable): { sizeRowIdx: number; sizes: SizeEntry[];
   return null;
 }
 
-function findMainTitle(table: GTPTable, sizeRowIdx: number, labelColCount: number): string {
-  const sizeRow = table.rows[sizeRowIdx];
-  for (const sl of slots(sizeRow)) {
+function findMainTitle(layout: RowLayout[], sizeRowIdx: number, labelColCount: number): string {
+  for (const sl of layout[sizeRowIdx].slots) {
     if (sl.startCol < labelColCount && sl.cell.text.trim() !== "") return sl.cell.text.trim();
   }
   for (let r = sizeRowIdx - 1; r >= 0; r--) {
-    for (const sl of slots(table.rows[r])) {
+    for (const sl of layout[r].slots) {
       const t = sl.cell.text.trim();
       if (t !== "" && (sl.startCol < labelColCount || sl.colspan >= labelColCount)) return t;
     }
@@ -100,8 +94,7 @@ function findMainTitle(table: GTPTable, sizeRowIdx: number, labelColCount: numbe
   return "GUARANTEED TECHNICAL PARTICULARS";
 }
 
-function rowIsInternalHeader(row: GTPRow, labelColCount: number): boolean {
-  const s = slots(row);
+function rowIsInternalHeader(s: CellSlot[], labelColCount: number): boolean {
   let hasLabelContent = false;
   let allLabelBold = true;
   let anyKeyword = false;
@@ -118,19 +111,19 @@ function rowIsInternalHeader(row: GTPRow, labelColCount: number): boolean {
 
 /**
  * Maps one source row into the per-size table's column layout:
- * label columns (0..labelColCount-1) + the single size value column.
+ * label columns (0..labelColCount-1) + that size's value column(s).
  * Full-width divider rows (e.g. "4. GENERAL TECHNICAL REQUIREMENTS:") become
  * a single merged cell spanning the whole per-size table.
  */
 function buildRowCells(
   row: GTPRow,
+  lay: RowLayout,
   labelColCount: number,
-  sizeColIdx: number,
-  isHeader: boolean
+  size: SizeEntry,
+  isHeader: boolean,
+  sizeRowIdx: number
 ): GTPRow {
-  const s = slots(row);
-
-  const divider = s.find(
+  const divider = lay.slots.find(
     (sl) =>
       sl.startCol === 0 &&
       sl.startCol + sl.colspan > labelColCount &&
@@ -138,33 +131,43 @@ function buildRowCells(
   );
   if (divider) {
     return {
-      cells: [ensureBorder({ ...divider.cell, colspan: labelColCount + 1, rowspan: undefined })],
+      cells: [ensureBorder({ ...divider.cell, colspan: labelColCount + size.span, rowspan: undefined })],
       height: row.height,
     };
   }
 
-  const cells: GTPCell[] = [];
-  let hasSize = false;
-  for (const sl of s) {
-    const end = sl.startCol + sl.colspan;
-    if (end <= labelColCount) {
-      cells.push(isHeader ? ensureBorder({ ...sl.cell, bold: true }) : ensureBorder(sl.cell));
-    } else if (sl.startCol < labelColCount) {
-      cells.push(
-        isHeader
-          ? ensureBorder({ ...sl.cell, bold: true, colspan: labelColCount - sl.startCol })
-          : ensureBorder({ ...sl.cell, colspan: labelColCount - sl.startCol })
-      );
-    } else if (sizeColIdx >= sl.startCol && sizeColIdx < end) {
-      cells.push(ensureBorder({ ...sl.cell, colspan: 1 }));
-      hasSize = true;
-    }
-  }
-  if (!hasSize) {
-    cells.push(isHeader ? makeHeaderCell("") : { text: "", borders: DEFAULT_BORDER });
+  const valueEnd = size.colIdx + size.span;
+  const placed: { col: number; cell: GTPCell }[] = [];
+  const filled = new Set<number>();
+  const place = (sl: CellSlot, from: number, to: number, bold: boolean): boolean => {
+    const start = Math.max(sl.startCol, from);
+    const end = Math.min(sl.startCol + sl.colspan, to);
+    if (end <= start) return false;
+    placed.push({
+      col: start,
+      cell: ensureBorder({ ...sl.cell, colspan: end - start, ...(bold ? { bold: true } : {}) }),
+    });
+    for (let c = start; c < end; c++) filled.add(c);
+    return true;
+  };
+
+  for (const sl of lay.slots) {
+    // A cell is either a label cell or a value cell, never both.
+    if (!place(sl, 0, labelColCount, isHeader)) place(sl, size.colIdx, valueEnd, false);
   }
 
-  return { cells, height: row.height };
+  // Pad columns that have no cell, unless a vertical merge kept in this table covers them.
+  const pad = (col: number) => {
+    if (filled.has(col)) return;
+    const owner = lay.coveredFrom.get(col);
+    if (owner !== undefined && owner > sizeRowIdx) return;
+    placed.push({ col, cell: isHeader ? makeHeaderCell("") : { text: "", borders: DEFAULT_BORDER } });
+  };
+  for (let c = 0; c < labelColCount; c++) pad(c);
+  for (let c = size.colIdx; c < valueEnd; c++) pad(c);
+
+  placed.sort((a, b) => a.col - b.col);
+  return { cells: placed.map((p) => p.cell), height: row.height };
 }
 
 function buildSizeTable(
@@ -172,39 +175,38 @@ function buildSizeTable(
   size: SizeEntry,
   mainTitle: string,
   labelColCount: number,
-  headerRows: GTPRow[],
-  dataRows: GTPRow[]
+  layout: RowLayout[],
+  sizeRowIdx: number,
+  headerRowCount: number
 ): GTPTable {
   const rows: GTPRow[] = [];
 
   rows.push({
     cells: [
-      makeHeaderCell(mainTitle, { colspan: labelColCount }),
-      makeHeaderCell(size.label),
+      makeHeaderCell(mainTitle, { colspan: labelColCount, like: size.cell }),
+      makeHeaderCell(size.label, { colspan: size.span, like: size.cell }),
     ],
   });
 
-  for (const h of headerRows) {
-    rows.push(buildRowCells(h, labelColCount, size.colIdx, true));
-  }
-  for (const d of dataRows) {
-    rows.push(buildRowCells(d, labelColCount, size.colIdx, false));
+  for (let r = sizeRowIdx + 1; r < table.rows.length; r++) {
+    const isHeader = r <= sizeRowIdx + headerRowCount;
+    rows.push(buildRowCells(table.rows[r], layout[r], labelColCount, size, isHeader, sizeRowIdx));
   }
 
   const srcWidths = table.columnWidths ?? [];
-  const labelWidths: number[] = [];
-  for (let i = 0; i < labelColCount; i++) {
+  const width = (i: number) => {
     const w = srcWidths[i];
-    labelWidths.push(typeof w === "number" && w > 0 ? w : 12);
-  }
-  const sw = srcWidths[size.colIdx];
-  const sizeWidth = typeof sw === "number" && sw > 0 ? sw : 12;
+    return typeof w === "number" && w > 0 ? w : 12;
+  };
+  const columnWidths: number[] = [];
+  for (let i = 0; i < labelColCount; i++) columnWidths.push(width(i));
+  for (let i = 0; i < size.span; i++) columnWidths.push(width(size.colIdx + i));
 
   return {
     sheetName: `${table.sheetName} — ${size.label}`,
     sourceFile: table.sourceFile,
     rows,
-    columnWidths: [...labelWidths, sizeWidth],
+    columnWidths,
   };
 }
 
@@ -216,31 +218,30 @@ export function splitGtpTablesBySize(tables: GTPTable[]): GTPTable[] {
   const out: GTPTable[] = [];
 
   for (const table of tables) {
-    const found = findSizeRow(table);
+    const layout = layoutTable(table);
+    const found = findSizeRow(table, layout);
     if (!found) {
       out.push(table);
       continue;
     }
 
     const { sizeRowIdx, sizes, labelColCount } = found;
-    const mainTitle = findMainTitle(table, sizeRowIdx, labelColCount);
+    const mainTitle = findMainTitle(layout, sizeRowIdx, labelColCount);
 
-    const headerRows: GTPRow[] = [];
-    for (let r = sizeRowIdx + 1; r < table.rows.length && headerRows.length < 3; r++) {
-      if (rowIsInternalHeader(table.rows[r], labelColCount)) headerRows.push(table.rows[r]);
+    let headerRowCount = 0;
+    for (let r = sizeRowIdx + 1; r < table.rows.length && headerRowCount < 3; r++) {
+      if (rowIsInternalHeader(layout[r].slots, labelColCount)) headerRowCount++;
       else break;
     }
 
-    const dataStart = sizeRowIdx + 1 + headerRows.length;
-    const dataRows = table.rows.slice(dataStart);
-
-    if (dataRows.length === 0) {
+    // No data rows below the headers: nothing worth splitting.
+    if (sizeRowIdx + 1 + headerRowCount >= table.rows.length) {
       out.push(table);
       continue;
     }
 
     for (const size of sizes) {
-      out.push(buildSizeTable(table, size, mainTitle, labelColCount, headerRows, dataRows));
+      out.push(buildSizeTable(table, size, mainTitle, labelColCount, layout, sizeRowIdx, headerRowCount));
     }
   }
 

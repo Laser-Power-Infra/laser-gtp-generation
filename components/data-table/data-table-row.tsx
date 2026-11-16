@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import type { DocketRecord, ChildItem } from "@/types";
 import TitleBlockDialog from "@/components/dialogs/title-block-dialog";
+import { ReviewCell } from "./review-cell";
 
 interface RowProps {
   record: DocketRecord & { childItems: ChildItem[] };
@@ -221,7 +222,7 @@ function ReadonlyCell({ record, field }: { record: DocketRecord; field: string }
           throw new Error(err);
         }
         const data = await res.json();
-        const newFiles = data.attachments.map((a: { name: string; url: string }) => ({ name: a.name, url: a.url }));
+        const newFiles = data.attachments.map((a: { id: string; name: string; url: string }) => ({ id: a.id, name: a.name, url: a.url }));
         dispatch(updateRecordField({ id: record.id, field: "excelFiles", value: [...files, ...newFiles] }));
         toast.success(`Uploaded ${selectedFiles.length} file(s)`, { id: toastId });
       } catch (err) {
@@ -390,6 +391,8 @@ export function DataTableRow({ record }: RowProps) {
               ? <OrientationCell record={record} />
               : col.key === "showTitleBlock"
                 ? <TitleBlockCell record={record} />
+                : col.key === "review"
+                  ? <ReviewCell record={record} />
                 : (col.key === "loiNo" || col.key === "project")
                   ? <EditableCell record={record} field={col.key} />
                   : <ReadonlyCell record={record} field={col.key} />

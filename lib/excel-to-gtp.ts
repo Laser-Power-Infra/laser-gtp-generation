@@ -1,7 +1,18 @@
 import ExcelJS from "exceljs";
+import * as XLSX from "xlsx";
+import fs from "fs";
 import {
   GTPTable, GTPRow, GTPCell, GTPAlignment, GTPVerticalAlign, GTPCellBorders,
 } from "@/types/gtp-types";
+
+const XLS_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0]);
+
+const THIN_BORDERS: GTPCellBorders = {
+  top: { style: "thin", color: "000000" },
+  left: { style: "thin", color: "000000" },
+  bottom: { style: "thin", color: "000000" },
+  right: { style: "thin", color: "000000" },
+};
 
 /**
  * Parses every sheet in one Excel workbook into one GTPTable per sheet.
@@ -15,16 +26,37 @@ import {
  */
 export async function parseWorkbookToGTPTables(filePath: string): Promise<GTPTable[]> {
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(filePath);
+  const fileBuffer = fs.readFileSync(filePath);
+  // Legacy .xls (OLE container, detected by magic bytes rather than the file
+  // name): exceljs reads .xlsx only, so convert through SheetJS first.
+  // shortcut: SheetJS community edition carries values, merges, number formats
+  // and column widths but not fonts/fills/borders, so every .xls cell gets a
+  // thin border and bold is lost. Upgrade if .xls styling ever matters.
+  const isLegacyXls = fileBuffer.subarray(0, 4).equals(XLS_MAGIC);
+  if (isLegacyXls) {
+    const legacy = XLSX.read(fileBuffer, { type: "buffer", cellNF: true, cellStyles: true });
+    await workbook.xlsx.load(XLSX.write(legacy, { type: "buffer", bookType: "xlsx" }));
+  } else {
+    await workbook.xlsx.load(fileBuffer as unknown as ArrayBuffer);
+  }
 
   const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
   const tables: GTPTable[] = [];
 
   workbook.eachSheet((worksheet) => {
-    // Build a lookup of merge ranges: "row,col" (top-left) -> { rowspan, colspan }
-    // and a set of "row,col" cells that are covered by a merge but NOT the
-    // top-left cell (these get skipped entirely when building rows).
-    const mergeInfo = new Map<string, { rowspan: number; colspan: number }>();
+    // The document mirrors what Excel shows: hidden sheets, rows and columns are left out.
+    if (worksheet.state !== "visible") return;
+
+    const colCount = worksheet.columnCount || 0;
+    const hiddenCols = new Set<number>();
+    for (let c = 1; c <= colCount; c++) {
+      if (worksheet.getColumn(c).hidden) hiddenCols.add(c);
+    }
+
+    // Merge ranges, counted over visible cells only: "row,col" of the first
+    // visible cell -> its spans plus the real top-left cell that holds the value.
+    // Every other visible cell of the range is covered and skipped.
+    const mergeInfo = new Map<string, { rowspan: number; colspan: number; srcRow: number; srcCol: number }>();
     const coveredCells = new Set<string>();
 
     // exceljs exposes merges as an array of range strings like "A1:D1"
@@ -37,30 +69,41 @@ export async function parseWorkbookToGTPTables(filePath: string): Promise<GTPTab
       const endRow = parseInt(end.row, 10);
       const startCol = parseInt(start.col, 10);
       const endCol = parseInt(end.col, 10);
-      const rowspan = endRow - startRow + 1;
-      const colspan = endCol - startCol + 1;
-      mergeInfo.set(`${startRow},${startCol}`, { rowspan, colspan });
 
-      for (let r = startRow; r <= endRow; r++) {
-        for (let c = startCol; c <= endCol; c++) {
-          if (r === startRow && c === startCol) continue;
-          coveredCells.add(`${r},${c}`);
+      const visRows: number[] = [];
+      for (let r = startRow; r <= endRow; r++) if (!worksheet.getRow(r).hidden) visRows.push(r);
+      const visCols: number[] = [];
+      for (let c = startCol; c <= endCol; c++) if (!hiddenCols.has(c)) visCols.push(c);
+      if (visRows.length === 0 || visCols.length === 0) continue;
+
+      const masterKey = `${visRows[0]},${visCols[0]}`;
+      mergeInfo.set(masterKey, {
+        rowspan: visRows.length,
+        colspan: visCols.length,
+        srcRow: startRow,
+        srcCol: startCol,
+      });
+      for (const r of visRows) {
+        for (const c of visCols) {
+          const key = `${r},${c}`;
+          if (key !== masterKey) coveredCells.add(key);
         }
       }
     }
 
     const rows: GTPRow[] = [];
-    const colCount = worksheet.columnCount || 0;
 
     worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+      if (row.hidden) return;
       const cells: GTPCell[] = [];
 
       for (let colNumber = 1; colNumber <= colCount; colNumber++) {
+        if (hiddenCols.has(colNumber)) continue;
         const key = `${rowNumber},${colNumber}`;
         if (coveredCells.has(key)) continue; // skip cells swallowed by a merge
 
-        const cell = row.getCell(colNumber);
         const merge = mergeInfo.get(key);
+        const cell = merge ? worksheet.getCell(merge.srcRow, merge.srcCol) : row.getCell(colNumber);
         const text = sanitizeXml(cellValueToString(cell));
         const fmt = extractFormatting(cell);
 
@@ -77,13 +120,23 @@ export async function parseWorkbookToGTPTables(filePath: string): Promise<GTPTab
           ...(fmt.verticalAlign ? { verticalAlign: fmt.verticalAlign } : {}),
           ...(fmt.indent ? { indent: fmt.indent } : {}),
           ...(fmt.wrapText ? { wrapText: true } : {}),
-          ...(Object.keys(fmt.borders).length > 0 ? { borders: fmt.borders } : {}),
+          ...(isLegacyXls
+            ? { borders: THIN_BORDERS }
+            : Object.keys(fmt.borders).length > 0 ? { borders: fmt.borders } : {}),
         });
       }
 
       // Preserve every row exactly as in the sheet, including blank spacer rows.
       rows.push({ cells, ...(row.height && row.height > 0 ? { height: row.height } : {}) });
     });
+
+    // Drop blank rows after the last data row (bordered leftovers print as an empty row).
+    // A row partly covered by a merge from above has fewer columns and is kept.
+    // shortcut: sheets with hidden columns never match colCount, so their trailing blanks stay; count visible columns if that shows up.
+    const isBlankFullRow = (r: GTPRow) =>
+      r.cells.every((c) => c.text.trim() === "" && !c.rowspan) &&
+      r.cells.reduce((n, c) => n + (c.colspan || 1), 0) === colCount;
+    while (rows.length > 0 && isBlankFullRow(rows[rows.length - 1])) rows.pop();
 
     // Skip metadata-only sheets (e.g. a sheet that just holds "UTILITY:" /
     // "RC NO.:" rows with no GTP table content). A real GTP sheet always has
@@ -124,14 +177,17 @@ export function mergeSingleValueRows(gtpTable: GTPTable): GTPTable {
   if (colCount <= 1) return gtpTable;
 
   const newRows: GTPRow[] = gtpTable.rows.map((row) => {
-    // If any cell in this row initiates a vertical merge (rowspan > 1), leave as is
-    const hasRowspan = row.cells.some((cell) => cell.rowspan && cell.rowspan > 1);
-    if (hasRowspan) return row;
+    // Cells that start a vertical merge (e.g. the "5. GENERAL CONSTRUCTIONS"
+    // section label beside "A. CONDUCTOR") stay as they are and are never
+    // merged into; the single value next to them can still take the empty
+    // cells to its right.
+    const startsMerge = (cell: GTPCell) => !!cell.rowspan && cell.rowspan > 1;
+    const hasRowspan = row.cells.some(startsMerge);
 
     // Find indices of non-empty cells
     const nonEmptyIndices: number[] = [];
     for (let i = 0; i < row.cells.length; i++) {
-      if (row.cells[i].text && row.cells[i].text.trim() !== "") {
+      if (row.cells[i].text && row.cells[i].text.trim() !== "" && !startsMerge(row.cells[i])) {
         nonEmptyIndices.push(i);
       }
     }
@@ -142,7 +198,7 @@ export function mergeSingleValueRows(gtpTable: GTPTable): GTPTable {
 
       // Check if all cells after targetIdx are empty
       const trailingEmpty = row.cells.slice(targetIdx + 1).every(
-        (cell) => !cell.text || cell.text.trim() === ""
+        (cell) => (!cell.text || cell.text.trim() === "") && !startsMerge(cell)
       );
 
       if (!trailingEmpty) return row;
@@ -156,7 +212,7 @@ export function mergeSingleValueRows(gtpTable: GTPTable): GTPTable {
 
       // If leading cells are empty AND total span equals colCount (no active left vertical merge),
       // merge ALL cells in the row into 1 full-width cell.
-      if (leadingEmpty && totalRowSpanSum === colCount) {
+      if (!hasRowspan && leadingEmpty && totalRowSpanSum === colCount) {
         if ((targetCell.colspan || 1) >= colCount) return row;
 
         const mergedCell: GTPCell = {
@@ -209,6 +265,7 @@ export async function parseWorkbooksToGTPTables(filePaths: string[]): Promise<GT
 function readColumnWidths(worksheet: ExcelJS.Worksheet, colCount: number): number[] {
   const widths: number[] = [];
   for (let c = 1; c <= colCount; c++) {
+    if (worksheet.getColumn(c).hidden) continue;
     const width = worksheet.getColumn(c).width;
     widths.push(typeof width === "number" && width > 0 ? width : 10);
   }
@@ -308,7 +365,7 @@ function normalizeColor(argb: string): string {
 }
 
 function sanitizeXml(s: string): string {
-  return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/g, "");
+  return s.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/g, "");
 }
 
 /**
@@ -321,23 +378,32 @@ function cellValueToString(cell: ExcelJS.Cell): string {
   if (value === null || value === undefined) return "";
 
   // Unwrap cached formula results so their numFmt applies to the result.
+  // A formula with no cached result (file never recalculated) renders blank.
   let resolved: unknown = value;
-  if (
-    typeof value === "object" &&
-    "result" in value &&
-    !("richText" in value) &&
-    !("text" in value)
-  ) {
-    resolved = (value as { result: unknown }).result;
+  if (typeof value === "object" && ("formula" in value || "sharedFormula" in value)) {
+    resolved = (value as { result?: unknown }).result ?? "";
+  }
+
+  // Error values (#N/A, #DIV/0!, …) show as their code, like in Excel.
+  if (typeof resolved === "object" && resolved !== null && "error" in resolved) {
+    return String((resolved as { error: unknown }).error);
   }
 
   const numFmt = cell.numFmt && cell.numFmt !== "General" ? cell.numFmt : undefined;
 
   if (typeof resolved === "number") {
-    return numFmt ? formatNumber(resolved, numFmt) : String(resolved);
+    return numFmt ? formatNumber(resolved, numFmt) : formatGeneral(resolved);
   }
   if (resolved instanceof Date) {
-    return numFmt ? formatDate(resolved, numFmt) : resolved.toDateString();
+    // exceljs drops the backslashes of escaped unit letters (0\ \m\m reads as
+    // "0 mm") and then mistakes the number for a date. A digit placeholder with
+    // no day/year/time code is a number, so turn it back into one.
+    const codes = numFmt?.replace(/\[[^\]]*\]|"[^"]*"/g, "") ?? "";
+    if (/[0#]/.test(codes) && !/[ydhs]/i.test(codes)) {
+      const serial = resolved.getTime() / 86400000 + 25569;
+      return formatNumber(Math.round(serial * 1e9) / 1e9, numFmt!);
+    }
+    return formatDate(resolved, numFmt ?? "dd-mm-yyyy");
   }
   if (typeof resolved === "boolean") return resolved ? "TRUE" : "FALSE";
   if (typeof resolved === "string") return resolved.trim();
@@ -346,51 +412,74 @@ function cellValueToString(cell: ExcelJS.Cell): string {
       return (resolved as any).richText.map((rt: any) => rt.text).join("");
     }
     if ("text" in resolved) return String((resolved as any).text);
-    if ("result" in resolved) return String((resolved as any).result);
   }
   return String(resolved).trim();
 }
 
+/** "General" display: drops binary float noise (0.30000000000000004 -> 0.3). */
+function formatGeneral(value: number): string {
+  return String(Number(value.toPrecision(15)));
+}
+
 /** Formats a numeric cell value for common Excel number formats. */
 function formatNumber(value: number, numFmt: string): string {
-  const section = numFmt.split(";")[0].replace(/\[[^\]]*\]/g, "").replace(/\*/g, "");
-  const literals: string[] = [];
-  const withPlaceholders = section.replace(/"([^"]+)"/g, (_m: string, lit: string) => {
-    literals.push(lit);
-    return "\u0001";
-  });
+  // Sections are positive;negative;zero. The negative section formats the
+  // absolute value and supplies its own sign/parentheses.
+  const sections = numFmt.split(";");
+  let section = sections[0];
+  let n = value;
+  if (value < 0 && sections.length > 1) {
+    section = sections[1];
+    n = -value;
+  } else if (value === 0 && sections.length > 2) {
+    section = sections[2];
+  }
 
-  const match = withPlaceholders.match(/^([^#0]*)([#0][#,0]*\.?[#0]*)(.*)$/);
-  if (!match) return String(value);
+  const literals: string[] = [];
+  const pattern = section
+    .replace(/\[[^\]]*\]/g, "") // [Red], [$-409], …
+    .replace(/"([^"]*)"|\\(.)/g, (_m: string, quoted?: string, escaped?: string) => {
+      literals.push(quoted ?? escaped ?? "");
+      return "\u0001";
+    })
+    .replace(/_./g, "") // "_)" = blank space as wide as ")"
+    .replace(/\*./g, ""); // "*x" = repeat-fill character
+
+  // Text, fraction and General formats: fall back to the plain number.
+  if (/[@?]|general/i.test(pattern)) return formatGeneral(value);
+
+  const match = pattern.match(/^([^#0]*)([#0][#,0]*\.?[#0]*)(.*)$/);
+  if (!match) return formatGeneral(value);
 
   const prefix = match[1];
   const numPart = match[2];
-  const suffix = match[3];
-  const isPercent = /%/.test(suffix);
-  const hasThousands = numPart.includes(",");
+  let suffix = match[3];
   const dotIdx = numPart.indexOf(".");
-  const decimals = dotIdx >= 0 ? numPart.length - dotIdx - 1 : 0;
-  const stripTrailingZeros = dotIdx >= 0 && numPart.slice(dotIdx).includes("#");
+  const decimalDigits = dotIdx >= 0 ? numPart.slice(dotIdx + 1) : "";
+  const maxDecimals = decimalDigits.length;
+  const minDecimals = decimalDigits.replace(/#/g, "").length;
 
-  let n = isPercent ? value * 100 : value;
-  let s = n.toFixed(decimals);
-  if (stripTrailingZeros && decimals > 0) {
-    s = s.replace(/\.?0+$/, "");
-  }
-  if (hasThousands) {
-    const neg = s.startsWith("-");
-    const abs = neg ? s.slice(1) : s;
-    const [int, dec] = abs.split(".");
-    s = (neg ? "-" : "") +
-      int.replace(/\B(?=(\d{3})+(?!\d))/g, ",") +
-      (dec !== undefined ? "." + dec : "");
+  let s: string;
+  const scientific = suffix.match(/^E([+-])(0+)/i);
+  if (scientific) {
+    const [mantissa, exp] = n.toExponential(maxDecimals).split("e");
+    const e = Number(exp);
+    const sign = e < 0 ? "-" : scientific[1] === "+" ? "+" : "";
+    s = `${mantissa}E${sign}${String(Math.abs(e)).padStart(scientific[2].length, "0")}`;
+    suffix = suffix.slice(scientific[0].length);
+  } else {
+    if (suffix.includes("%")) n *= 100;
+    let [int, dec = ""] = n.toFixed(maxDecimals).split(".");
+    while (dec.length > minDecimals && dec.endsWith("0")) dec = dec.slice(0, -1);
+    if (numPart.includes(",")) {
+      const neg = int.startsWith("-");
+      int = (neg ? "-" : "") + (neg ? int.slice(1) : int).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    }
+    s = dec ? `${int}.${dec}` : int;
   }
 
-  let out = prefix + s + suffix;
-  for (const literal of literals) {
-    out = out.replace("\u0001", literal);
-  }
-  return out;
+  let i = 0;
+  return (prefix + s + suffix).replace(/\u0001/g, () => literals[i++] ?? "");
 }
 
 const MONTHS_FULL = [
@@ -401,26 +490,66 @@ const DAYS_FULL = [
   "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 ];
 
-/** Formats a date cell value for common Excel date/time formats. */
+const DATE_TOKEN =
+  /"([^"]*)"|\\(.)|yyyy|yy|mmmmm|mmmm|mmm|mm|m|dddd|ddd|dd|d|hh|h|ss|s|AM\/PM|A\/P/gi;
+
+/**
+ * Formats a date cell value for common Excel date/time formats.
+ * exceljs returns dates as UTC, so UTC getters give the value Excel shows
+ * regardless of the server's timezone.
+ */
 function formatDate(value: Date, numFmt: string): string {
+  // Excel's built-in "short date" follows the PC's regional settings; exceljs
+  // reports it as US-style mm-dd-yy. Our sheets are authored as day-month-year.
+  const fmt = numFmt === "mm-dd-yy" ? "dd-mm-yyyy" : numFmt;
+  const section = fmt.split(";")[0].replace(/\[[^\]]*\]/g, "");
+
   const pad = (n: number) => String(n).padStart(2, "0");
-  const hasHour = /h/i.test(numFmt);
-  const out = numFmt
-    .replace(/yyyy/g, () => String(value.getFullYear()))
-    .replace(/yy/g, () => pad(value.getFullYear() % 100))
-    .replace(/dddd/g, () => DAYS_FULL[value.getDay()])
-    .replace(/ddd/g, () => DAYS_FULL[value.getDay()].slice(0, 3))
-    .replace(/dd/g, () => pad(value.getDate()))
-    .replace(/d/g, () => String(value.getDate()))
-    .replace(/mmmm/g, () => MONTHS_FULL[value.getMonth()])
-    .replace(/mmm/g, () => MONTHS_FULL[value.getMonth()].slice(0, 3))
-    .replace(/mm/g, () => (hasHour ? pad(value.getMinutes()) : pad(value.getMonth() + 1)))
-    .replace(/m/g, () => (hasHour ? String(value.getMinutes()) : String(value.getMonth() + 1)))
-    .replace(/hh/g, () => pad(value.getHours()))
-    .replace(/h/g, () => String(value.getHours()))
-    .replace(/ss/g, () => pad(value.getSeconds()))
-    .replace(/s/g, () => String(value.getSeconds()))
-    .replace(/AM\/PM/g, () => (value.getHours() < 12 ? "AM" : "PM"))
-    .replace(/A\/P/g, () => (value.getHours() < 12 ? "A" : "P"));
-  return out;
+  const twelveHour = /AM\/PM|A\/P/i.test(section);
+  const hours24 = value.getUTCHours();
+  const hours = twelveHour ? hours24 % 12 || 12 : hours24;
+
+  const matches = [...section.matchAll(DATE_TOKEN)];
+  const isLiteral = (m: RegExpMatchArray) => m[1] !== undefined || m[2] !== undefined;
+  const codes = matches.filter((m) => !isLiteral(m));
+
+  let out = "";
+  let last = 0;
+  for (const m of matches) {
+    out += section.slice(last, m.index);
+    last = (m.index ?? 0) + m[0].length;
+
+    if (isLiteral(m)) {
+      out += m[1] ?? m[2];
+      continue;
+    }
+
+    const token = m[0].toLowerCase();
+    // "m"/"mm" mean minutes right after hours or right before seconds, else month.
+    const idx = codes.indexOf(m);
+    const isMinute =
+      (token === "m" || token === "mm") &&
+      (/^h/i.test(codes[idx - 1]?.[0] ?? "") || /^s/i.test(codes[idx + 1]?.[0] ?? ""));
+
+    switch (token) {
+      case "yyyy": out += value.getUTCFullYear(); break;
+      case "yy": out += pad(value.getUTCFullYear() % 100); break;
+      case "mmmmm": out += MONTHS_FULL[value.getUTCMonth()][0]; break;
+      case "mmmm": out += MONTHS_FULL[value.getUTCMonth()]; break;
+      case "mmm": out += MONTHS_FULL[value.getUTCMonth()].slice(0, 3); break;
+      case "mm": out += pad(isMinute ? value.getUTCMinutes() : value.getUTCMonth() + 1); break;
+      case "m": out += isMinute ? value.getUTCMinutes() : value.getUTCMonth() + 1; break;
+      case "dddd": out += DAYS_FULL[value.getUTCDay()]; break;
+      case "ddd": out += DAYS_FULL[value.getUTCDay()].slice(0, 3); break;
+      case "dd": out += pad(value.getUTCDate()); break;
+      case "d": out += value.getUTCDate(); break;
+      case "hh": out += pad(hours); break;
+      case "h": out += hours; break;
+      case "ss": out += pad(value.getUTCSeconds()); break;
+      case "s": out += value.getUTCSeconds(); break;
+      case "am/pm": out += hours24 < 12 ? "AM" : "PM"; break;
+      case "a/p": out += hours24 < 12 ? "A" : "P"; break;
+    }
+  }
+  return out + section.slice(last);
 }

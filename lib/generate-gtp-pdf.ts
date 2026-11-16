@@ -9,6 +9,8 @@ import type {
   GTPCell,
   GTPBorderSide,
 } from "@/types/gtp-types";
+import { cutRowspansAtHeader } from "./gtp-layout";
+import { mergeSingleValueRows } from "./excel-to-gtp";
 
 export interface GenerateGtpPdfOptions {
   /** Output path to write the PDF to. */
@@ -45,6 +47,7 @@ const MAX_ROW_HEIGHT_POINTS = 40;
 
 interface RenderableTable {
   sheetName: string;
+  colPcts: string[];
   headerRows: RenderableRow[];
   bodyRows: RenderableRow[];
 }
@@ -150,11 +153,15 @@ function computeHeaderRowCount(gtpTable: GTPTable): number {
   return count;
 }
 
-function toRenderableTable(gtpTable: GTPTable): RenderableTable {
+function toRenderableTable(sourceTable: GTPTable): RenderableTable {
+  // Same section-header merging the docx renderer applies, so both outputs match.
+  const rawTable = mergeSingleValueRows(sourceTable);
+  const headerRowCount = computeHeaderRowCount(rawTable);
+  // A rowspan must not cross the thead/tbody boundary; cut it there.
+  const gtpTable = cutRowspansAtHeader(rawTable, headerRowCount);
   const pcts = columnWidthPcts(gtpTable);
-  const headerRowCount = computeHeaderRowCount(gtpTable);
 
-  const renderRow = (row: GTPRow, isHeader: boolean): RenderableRow => {
+  const renderRow = (row: GTPRow): RenderableRow => {
     const cells: RenderableCell[] = [];
     let colIdx = 0;
     for (const cell of row.cells) {
@@ -167,8 +174,7 @@ function toRenderableTable(gtpTable: GTPTable): RenderableTable {
         text: cell.text,
         style: buildCellStyle(cell, pct),
         ...(span > 1 ? { colspan: span } : {}),
-        // rowspan must not cross the thead/tbody boundary, so header rows lose it.
-        ...(!isHeader && cell.rowspan && cell.rowspan > 1 ? { rowspan: cell.rowspan } : {}),
+        ...(cell.rowspan && cell.rowspan > 1 ? { rowspan: cell.rowspan } : {}),
       });
       colIdx += span;
     }
@@ -178,9 +184,12 @@ function toRenderableTable(gtpTable: GTPTable): RenderableTable {
     };
   };
 
-  const rows = gtpTable.rows.map((r, i) => renderRow(r, i < headerRowCount));
+  const rows = gtpTable.rows.map(renderRow);
   return {
     sheetName: gtpTable.sheetName,
+    // Real per-column widths: with table-layout:fixed the first row alone would
+    // otherwise set them, and that row is usually a merged title.
+    colPcts: pcts.map((p) => p.toFixed(2)),
     headerRows: rows.slice(0, headerRowCount),
     bodyRows: rows.slice(headerRowCount),
   };

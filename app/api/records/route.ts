@@ -2,13 +2,30 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { fetchAllRecords, SmartsheetRecord } from "@/lib/smartsheet";
 
+/** Every docket with its files and the latest step of its review flow. */
+async function allRecords() {
+  const [records, steps] = await Promise.all([
+    prisma.docketRecord.findMany({
+      orderBy: { docketNumber: "asc" },
+      include: { attachments: { select: { id: true, name: true, url: true } } },
+    }),
+    // The list must still load before the GtpMail migration is applied.
+    prisma.gtpMail
+      .findMany({
+        orderBy: { createdAt: "desc" },
+        distinct: ["recordId"],
+        select: { recordId: true, stage: true, version: true, sentTo: true, createdAt: true },
+      })
+      .catch(() => []),
+  ]);
+  const latest = new Map(steps.map(({ recordId, ...step }) => [recordId, step]));
+  return records.map((r) => ({ ...r, review: latest.get(r.id) ?? null }));
+}
+
 export async function GET() {
   console.log("[API] GET /api/records called");
   try {
-    const records = await prisma.docketRecord.findMany({
-      orderBy: { docketNumber: "asc" },
-      include: { attachments: { select: { id: true, name: true, url: true } } },
-    });
+    const records = await allRecords();
     console.log("[API] GET result:", records.length, "records found");
     return NextResponse.json({ records });
   } catch (error) {
@@ -63,8 +80,7 @@ export async function POST() {
 
     if (smartsheetRecords.length === 0) {
       console.warn("[API] No records returned from Smartsheet");
-      const allRecords = await prisma.docketRecord.findMany({ orderBy: { docketNumber: "asc" }, include: { attachments: { select: { id: true, name: true, url: true } } } });
-      return NextResponse.json({ records: allRecords, syncedCount: 0 });
+      return NextResponse.json({ records: await allRecords(), syncedCount: 0 });
     }
 
     // 1. Fetch all existing records from DB (1 query)
@@ -113,13 +129,10 @@ export async function POST() {
     const syncedCount = toCreate.length + toUpdate.length;
     console.log("[API] Synced:", syncedCount, "records (created:", toCreate.length, "updated:", toUpdate.length, ")");
 
-    const allRecords = await prisma.docketRecord.findMany({
-      orderBy: { docketNumber: "asc" },
-      include: { attachments: { select: { id: true, name: true, url: true } } },
-    });
-    console.log("[API] Returning", allRecords.length, "records from DB after sync");
+    const records = await allRecords();
+    console.log("[API] Returning", records.length, "records from DB after sync");
 
-    return NextResponse.json({ records: allRecords, syncedCount });
+    return NextResponse.json({ records, syncedCount });
   } catch (error) {
     console.error("[API] POST /api/records error:", error);
     return NextResponse.json(

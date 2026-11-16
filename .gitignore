@@ -50,6 +50,7 @@ credentials.json
 # *.rels*
 # *.xml
 scratch/
+/tmp
 
 # letterhead footer assets must ship with the deployment
 # !public/letterhead-footer/

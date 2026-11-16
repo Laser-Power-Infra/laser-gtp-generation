@@ -26,6 +26,7 @@ export const COLUMNS = [
   { key: "orientation", label: "Orientation", filterType: null, sortable: false },
   { key: "showTitleBlock", label: "Title Block", filterType: null, sortable: false },
   { key: "docxStatus", label: "Generate GTP", filterType: null, sortable: true },
+  { key: "review", label: "Review", filterType: null, sortable: false },
 ];
 
 export const CHILD_COLUMNS = [

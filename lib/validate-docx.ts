@@ -38,16 +38,22 @@ export async function validateAndFixGTPDocx(buffer: Buffer): Promise<Buffer> {
       // Check if cell 0 is a vertical merge continuation
       const isCell0VMerge = /<w:vMerge\b[^>]*\bw:val="continue"/i.test(cells[0]);
 
+      // Collapsing the row would delete any other vertical-merge cell in it and
+      // break that merge, so only the "cell 0 continues a merge" shape is handled.
+      const vMergeCount = cells.filter((c) => /<w:vMerge\b/i.test(c)).length;
+      const safeToCollapse = vMergeCount === 0 || (isCell0VMerge && vMergeCount === 1);
+
       // If exactly 1 cell has text (e.g. A. CONDUCTOR, B. INSULATIONS:, C. Sealing end cap:)
-      if (nonEmptyIndices.length === 1) {
+      if (nonEmptyIndices.length === 1 && safeToCollapse) {
         const targetIdx = nonEmptyIndices[0];
         const targetTextCell = cells[targetIdx];
 
         if (isCell0VMerge && targetIdx > 0) {
           // Keep cell 0 as vertical merge continuation
           const cell0Xml = cells[0];
-          // Modify targetTextCell to span remaining columns: gridCols - 1
-          const remainingCols = gridCols - 1;
+          // Modify targetTextCell to span the columns cell 0 does not occupy
+          const cell0Span = parseInt(cell0Xml.match(/<w:gridSpan\b[^>]*\bw:val="(\d+)"/i)?.[1] ?? "1", 10);
+          const remainingCols = gridCols - cell0Span;
           const fixedTargetCell = setCellGridSpan(targetTextCell, remainingCols);
           return replaceRowCells(trXml, [cell0Xml, fixedTargetCell]);
         } else {

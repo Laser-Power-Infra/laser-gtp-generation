@@ -22,6 +22,7 @@ model DocketRecord {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   attachments     Attachment[]
+  mails           GtpMail[]
 
   @@index([utility])
   @@index([partyName])
@@ -49,4 +50,23 @@ model User {
   imageUrl  String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+// One row per step of the review flow: mailed for review, approved, mailed to the client.
+// The latest row of a record is its current stage.
+model GtpMail {
+  id        String   @id @default(cuid())
+  recordId  String
+  stage     String   // "review" | "approved" | "client"
+  version   Int
+  sentTo    String?
+  cc        String?
+  byUser    String?
+  messageId String?
+  fileName  String?
+  pdf       Bytes?   // the exact PDF mailed for review; the client gets this same file
+  createdAt DateTime @default(now())
+
+  record    DocketRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@index([recordId, createdAt])
 }

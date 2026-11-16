@@ -1,20 +1,13 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { parseWorkbooksToGTPTables } from "@/lib/excel-to-gtp";
-import { splitGtpTablesBySize } from "@/lib/split-gtp-tables";
-import { generateGTPDocx } from "@/lib/generate-gtp-docx";
-import { generateGtpPdf } from "@/lib/generate-gtp-pdf";
-import fs from "fs";
-import path from "path";
-import os from "os";
+import { generateGtpForRecord } from "@/lib/generate-for-record";
 
-function extractFileId(driveUrl: string): string | null {
-  const m = driveUrl.match(/\/d\/([^/]+)/);
-  return m ? m[1] : null;
-}
+const CONTENT_TYPES = {
+  pdf: "application/pdf",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+};
 
 export async function POST(request: Request) {
-  const body = await request.json();
+  const body = await request.json().catch(() => ({}));
   const { recordId, orientation, format } = body as {
     recordId?: string;
     orientation?: "portrait" | "landscape";
@@ -26,120 +19,23 @@ export async function POST(request: Request) {
   }
 
   const outputFormat = format === "pdf" ? "pdf" : "docx";
-  const pageOrientation = orientation === "landscape" ? "landscape" : "portrait";
+  const result = await generateGtpForRecord(
+    recordId,
+    outputFormat,
+    orientation === "landscape" ? "landscape" : "portrait"
+  );
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: result.status });
+  }
 
-  const record = await prisma.docketRecord.findUnique({
-    where: { id: recordId },
-    include: { attachments: true },
+  // Headers are Latin-1 only; docket numbers can carry en dashes etc.
+  const asciiName = result.filename.replace(/[^\x20-\x7E]|["\\]/g, "_");
+
+  return new NextResponse(new Uint8Array(result.buffer), {
+    headers: {
+      "Content-Type": CONTENT_TYPES[outputFormat],
+      "Content-Disposition": `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(result.filename)}`,
+      "X-Generation-Version": String(result.version),
+    },
   });
-
-  if (!record) {
-    return NextResponse.json({ error: "Record not found" }, { status: 404 });
-  }
-
-  if (record.attachments.length === 0) {
-    return NextResponse.json(
-      { error: "No Excel files uploaded for this record" },
-      { status: 400 }
-    );
-  }
-
-  const titleBlockMode =
-    record.titleBlockMode === "custom" || record.titleBlockMode === "none"
-      ? record.titleBlockMode
-      : "standard";
-  const titleBlockCustomRows: { label: string; value: string }[] = Array.isArray(
-    record.titleBlockCustomRows
-  )
-    ? (record.titleBlockCustomRows as unknown as { label: string; value: string }[])
-    : [];
-
-  const version = (record.generationVersion ?? 0) + 1;
-
-  await prisma.docketRecord.update({
-    where: { id: recordId },
-    data: { generationVersion: version },
-  });
-
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gtp-"));
-  try {
-    const filePaths: string[] = [];
-
-    for (const attachment of record.attachments) {
-      const fileId = extractFileId(attachment.url);
-      if (!fileId) {
-        console.warn("[Generate] Could not extract fileId from:", attachment.url);
-        continue;
-      }
-
-      const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}&confirm=t`;
-      const res = await fetch(downloadUrl);
-      if (!res.ok) {
-        console.warn("[Generate] Failed to download", attachment.name, res.status);
-        continue;
-      }
-
-      const buffer = Buffer.from(await res.arrayBuffer());
-      const filePath = path.join(tmpDir, attachment.name);
-      fs.writeFileSync(filePath, buffer);
-      filePaths.push(filePath);
-    }
-
-    if (filePaths.length === 0) {
-      return NextResponse.json(
-        { error: "Failed to download any Excel files" },
-        { status: 500 }
-      );
-    }
-
-    const tables = splitGtpTablesBySize(await parseWorkbooksToGTPTables(filePaths));
-
-    const data = {
-      owner: record.utility || "",
-      project: record.Project || "",
-      contractor: record.partyName || "",
-      loiNo: record.loiNo || "",
-      tables,
-    };
-
-    if (outputFormat === "pdf") {
-      const pdfOutputPath = path.join(tmpDir, "output.pdf");
-      const pdfBuffer = await generateGtpPdf(data, {
-        outputPath: pdfOutputPath,
-        orientation: pageOrientation,
-        titleBlockMode,
-        titleBlockCustomRows,
-      });
-
-      const filename = `${record.docketNumber || "GTP"}_v${version}.pdf`;
-      return new NextResponse(new Uint8Array(pdfBuffer), {
-        headers: {
-          "Content-Type": "application/pdf",
-          "Content-Disposition": `attachment; filename="${filename}"`,
-          "X-Generation-Version": String(version),
-        },
-      });
-    }
-
-    const outputPath = path.join(tmpDir, "output.docx");
-    const docxBuffer = await generateGTPDocx(data, {
-      outputPath,
-      orientation: pageOrientation,
-      titleBlockMode,
-      titleBlockCustomRows,
-    });
-
-    const filename = `${record.docketNumber || "GTP"}_v${version}.docx`;
-
-    return new NextResponse(new Uint8Array(docxBuffer), {
-      headers: {
-        "Content-Type":
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "X-Generation-Version": String(version),
-      },
-    });
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
 }

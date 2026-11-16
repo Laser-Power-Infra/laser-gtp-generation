@@ -8,6 +8,7 @@ import type {
 } from "@/types/gtp-types";
 import { applyLetterheadFooter } from "./apply-letterhead-footer";
 import { mergeSingleValueRows } from "./excel-to-gtp";
+import { cutRowspansAtHeader } from "./gtp-layout";
 import fs from "fs";
 import path from "path";
 
@@ -116,18 +117,10 @@ interface RowspanEntry {
   borders?: GTPCellBorders;
 }
 
-interface DeferredRowspan {
-  startCol: number;
-  colSpan: number;
-  /** Continuation rows left below the original start row. */
-  remaining: number;
-  cell: GTPCell;
-}
-
 /**
  * Number of top rows that make up the sheet's header block (title, size
- * labels, column headers). These rows are repeated on every page, so they
- * must not contain vertical merges.
+ * labels, column headers). These rows are repeated on every page, so no
+ * vertical merge may cross out of them (see cutRowspansAtHeader).
  */
 function computeHeaderRowCount(gtpTable: GTPTable): number {
   let count = 0;
@@ -155,15 +148,19 @@ function buildParagraph(
   }
 ): Paragraph {
   return new Paragraph({
-    children: [
-      new TextRun({
-        text,
-        bold: options?.bold,
-        size: options?.fontSize ?? FONT_SIZE,
-        color: options?.color,
-        font: options?.font,
-      }),
-    ],
+    // One run per line: Word ignores "\n" inside a run, so in-cell line breaks
+    // (Alt+Enter in Excel) need an explicit break.
+    children: text.split("\n").map(
+      (line, i) =>
+        new TextRun({
+          text: line,
+          break: i > 0 ? 1 : undefined,
+          bold: options?.bold,
+          size: options?.fontSize ?? FONT_SIZE,
+          color: options?.color,
+          font: options?.font,
+        })
+    ),
     alignment: options?.alignment,
     indent: options?.indent ? { left: options.indent } : undefined,
     spacing: { before: 0, after: 0 },
@@ -289,7 +286,6 @@ function buildRows(gtpTable: GTPTable, colWidths: number[]): TableRow[] {
   const columnCount = getTableColumnCount(gtpTable);
   const headerRowCount = computeHeaderRowCount(gtpTable);
   const active: RowspanEntry[] = [];
-  const deferred: DeferredRowspan[] = [];
   const rows: TableRow[] = [];
 
   const sumWidth = (startCol: number, span: number): number => {
@@ -330,52 +326,20 @@ function buildRows(gtpTable: GTPTable, colWidths: number[]): TableRow[] {
         continue;
       }
 
-      // Start deferred merges at the first non-header row.
-      const dIdx = deferred.findIndex((d) => d.startCol === colIdx);
-      if (dIdx >= 0) {
-        const d = deferred[dIdx];
-        deferred.splice(dIdx, 1);
-        cells.push(
-          buildCell(d.cell, { verticalMerge: "restart", widthTwip: sumWidth(colIdx, d.colSpan) })
-        );
-        active.push({
-          startCol: d.startCol,
-          colSpan: d.colSpan,
-          remaining: d.remaining - 1,
-          borders: d.cell.borders,
-        });
-        colIdx += d.colSpan;
-        continue;
-      }
-
       if (cellIdx < gtpRow.cells.length) {
         const gtpCell = gtpRow.cells[cellIdx];
         const cellSpan = gtpCell.colspan || 1;
 
         if (gtpCell.rowspan && gtpCell.rowspan > 1) {
-          if (isHeaderRow) {
-            // Header rows must stay free of vertical merges so Word repeats
-            // them. Defer the merge to the first data row below the header.
-            deferred.push({
-              startCol: colIdx,
-              colSpan: cellSpan,
-              remaining: gtpCell.rowspan - 1,
-              cell: gtpCell,
-            });
-            cells.push(
-              buildCell({ ...gtpCell, text: "", rowspan: undefined }, { widthTwip: sumWidth(colIdx, cellSpan) })
-            );
-          } else {
-            active.push({
-              startCol: colIdx,
-              colSpan: cellSpan,
-              remaining: gtpCell.rowspan - 1,
-              borders: gtpCell.borders,
-            });
-            cells.push(
-              buildCell(gtpCell, { verticalMerge: "restart", widthTwip: sumWidth(colIdx, cellSpan) })
-            );
-          }
+          active.push({
+            startCol: colIdx,
+            colSpan: cellSpan,
+            remaining: gtpCell.rowspan - 1,
+            borders: gtpCell.borders,
+          });
+          cells.push(
+            buildCell(gtpCell, { verticalMerge: "restart", widthTwip: sumWidth(colIdx, cellSpan) })
+          );
         } else {
           cells.push(buildCell(gtpCell, { widthTwip: sumWidth(colIdx, cellSpan) }));
         }
@@ -420,7 +384,9 @@ function buildRows(gtpTable: GTPTable, colWidths: number[]): TableRow[] {
 }
 
 function buildTable(rawTable: GTPTable, printableWidth: number): Table {
-  const gtpTable = mergeSingleValueRows(rawTable);
+  const merged = mergeSingleValueRows(rawTable);
+  // Header rows repeat on every page, so a merge may not run from them into the body.
+  const gtpTable = cutRowspansAtHeader(merged, computeHeaderRowCount(merged));
   const colWidths = calculateColumnWidthsInTwips(gtpTable, printableWidth);
   const totalWidth = colWidths.reduce((a, b) => a + b, 0);
   return new Table({

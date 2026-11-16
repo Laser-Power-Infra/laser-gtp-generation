@@ -7,6 +7,14 @@ export interface ChildItem {
   dueDate: string;
 }
 
+/** Latest step of a docket's review flow: mailed for review -> approved -> mailed to the client. */
+export interface ReviewStep {
+  stage: "review" | "approved" | "client";
+  version: number;
+  sentTo: string | null;
+  createdAt: string;
+}
+
 export interface DocketRecord {
   id: string;
   docketNumber: string;
@@ -24,6 +32,7 @@ export interface DocketRecord {
   docxGeneratedAt?: string;
   docxProgress?: number;
   childItems?: ChildItem[];
+  review?: ReviewStep | null;
 }
 
 export type SortDirection = "asc" | "desc" | null;

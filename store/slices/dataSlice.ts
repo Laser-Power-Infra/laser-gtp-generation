@@ -2,7 +2,7 @@ import {
   createSlice, createEntityAdapter, createAsyncThunk, createSelector,
   PayloadAction,
 } from "@reduxjs/toolkit";
-import type { DocketRecord, ChildItem } from "@/types";
+import type { DocketRecord, ChildItem, ReviewStep } from "@/types";
 import { generateChildItems } from "@/lib/child-data";
 import { toast } from "sonner";
 
@@ -59,6 +59,7 @@ interface DbRecord {
   createdAt: string;
   updatedAt: string;
   attachments: { id: string; name: string; url: string }[];
+  review?: ReviewStep | null;
 }
 
 function toDocketRecord(r: DbRecord, existing: DocketRecord | undefined): DocketRecord {
@@ -84,6 +85,7 @@ function toDocketRecord(r: DbRecord, existing: DocketRecord | undefined): Docket
     docxStatus: (existing?.docxStatus as DocketRecord["docxStatus"]) ?? "not_generated",
     docxGeneratedAt: existing?.docxGeneratedAt,
     docxProgress: existing?.docxProgress,
+    review: r.review ?? null,
   };
 }
 
@@ -162,6 +164,15 @@ const dataSlice = createSlice({
     ) {
       state.recordOrientations[action.payload.id] = action.payload.orientation;
     },
+    setRecordReview(state, action: PayloadAction<{ id: string; review: ReviewStep }>) {
+      const { id, review } = action.payload;
+      const current = state.entities[id]?.generationVersion ?? 0;
+      dataAdapter.updateOne(state, {
+        id,
+        // Mailing for review generates a new version of the document.
+        changes: { review, generationVersion: Math.max(current, review.version) },
+      });
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -230,7 +241,7 @@ const dataSlice = createSlice({
   },
 });
 
-export const { setChildItems, setRecordOrientation } = dataSlice.actions;
+export const { setChildItems, setRecordOrientation, setRecordReview } = dataSlice.actions;
 
 import type { RootState } from "@/store";
 const dataSelectors = dataAdapter.getSelectors<RootState>((s) => s.data);
